@@ -9,7 +9,7 @@ independent reviewer already attacked the diff mechanically, and this is
 the look-through before `git merge --no-ff`.
 
 It works standalone in any git repository: no Claude Code session, no
-setup(), no configuration, no dependencies.
+required setup(), no dependencies.
 
 ==============================================================================
 COMMANDS                                                        *orca-commands*
@@ -77,13 +77,48 @@ Buffer-local only, set in the buffers the session owns (both diff sides and
 the quickfix window) and removed when the session lets go of them. The
 commands above are the public API; map your own globals if you want them.
 
-        ]f              :OrcaReviewNext
-        [f              :OrcaReviewPrev
-        <leader>rm      :OrcaReviewMark
-        <leader>rq      :OrcaReviewClose
+Every default is a native key upgraded in place — orca never binds a key
+that doesn't already mean what orca makes it do:
+
+        ]q              :OrcaReviewNext — |]q|'s own meaning, direct route.
+                        Takes a count: `3]q` moves three files, clamped at
+                        the list edge.
+        [q              :OrcaReviewPrev, same contract.
         <CR>            (quickfix window only) open this file's diff pair
 
+If another list lands in the quickfix window mid-session (|:grep|, LSP
+references), the keys fall back to stock behavior — <CR> jumps to the
+entry, ]q/[q run |:cnext|/|:cprevious| — until orca's list is current
+again.
+
 |]c| and |[c| hunk motions are native diff mode — nothing to define.
+
+Mark and close ship unbound: no native key means what they do, and
+<leader> is yours. They stay available as |:OrcaReviewMark| /
+|:OrcaReviewClose|; one line binds them if you want keys: >
+
+        vim.g.orca_mappings = { mark = '<leader>rm', close = '<leader>rq' }
+<
+                                                          *vim.g.orca_mappings*
+`vim.g.orca_mappings` reshapes the maps, read when a session starts (order
+relative to plugin load never matters). A table overrides per action — keys
+`next`, `prev`, `mark`, `close`, `open` — with `false` dropping that one
+map; the whole variable set to `false` drops them all: >
+
+        vim.g.orca_mappings = { next = ']f', prev = '[f' }   -- the old keys
+        vim.g.orca_mappings = false                          -- commands only
+<
+                                                                  *orca.setup()*
+setup({opts}) is optional sugar over the same variable — `setup({mappings =
+...})` assigns `vim.g.orca_mappings` and nothing else, so lazy.nvim's
+`opts` works: >
+
+        {
+          "miguelbacalhau/orca.nvim",
+          opts = { mappings = { mark = "<leader>v" } },
+        }
+<
+Nothing requires calling it; the plugin stays lazy either way.
 
 ==============================================================================
 INSTALLATION                                                     *orca-install*
@@ -92,8 +127,8 @@ Install with your plugin manager, like any other plugin. lazy.nvim: >
 
         { "miguelbacalhau/orca.nvim" }
 <
-No setup() call, no configuration, no dependencies — the spec above is
-complete. Any manager that installs from GitHub works the same way;
+No setup() call required, no dependencies — |orca-keymaps| covers the only
+configuration. Any manager that installs from GitHub works the same way;
 updates ride the manager's own update flow.
 
 Without a plugin manager, clone into Neovim's native packpath

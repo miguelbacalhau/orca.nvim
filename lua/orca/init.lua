@@ -19,12 +19,67 @@ end
 
 -- Buffer-local convenience maps; the :OrcaReview* commands are the public
 -- API. Set only in buffers the session owns, removed when it lets go.
-local MAPS = {
-  { ']f', function() M.next() end, 'orca: next file' },
-  { '[f', function() M.prev() end, 'orca: previous file' },
-  { '<leader>rm', function() M.mark() end, 'orca: toggle reviewed and advance' },
-  { '<leader>rq', function() M.close() end, 'orca: close review' },
+-- vim.g.orca_mappings reshapes them: a table overrides per action (false
+-- drops one), false wholesale drops them all. Resolved once per session.
+-- Every default is a native key upgraded in place — orca never binds a key
+-- that doesn't already mean what orca makes it do. mark/close ship unbound
+-- (no native key means what they do); the commands and config keys remain.
+local DEFAULT_MAPPINGS = {
+  next = ']q',
+  prev = '[q',
+  open = '<CR>', -- quickfix window only
 }
+
+local VALID_ACTIONS = { next = true, prev = true, mark = true, close = true, open = true }
+
+-- List-identity guard: another list can land in the qf window mid-session
+-- (:grep, LSP references — usually accidental), and orca's keys must not
+-- hijack it. The maps stay asserted either way (the re-assert race
+-- machinery is untouched); on a foreign list the mapped function falls
+-- through to the stock command, surfacing its errors (E553 at the edges)
+-- the way the unmapped key would.
+local function foreign_list()
+  return session ~= nil and vim.fn.getqflist({ id = 0 }).id ~= session.qfid
+end
+
+local function native(cmd)
+  local ok, err = pcall(vim.cmd, cmd)
+  if not ok then
+    vim.api.nvim_echo({ { err:match('(E%d+:.*)') or err, 'ErrorMsg' } }, true, {})
+  end
+end
+
+local ACTIONS = {
+  { 'next', function()
+    if foreign_list() then return native(vim.v.count1 .. 'cnext') end
+    M.next(vim.v.count1)
+  end, 'orca: next file' },
+  { 'prev', function()
+    if foreign_list() then return native(vim.v.count1 .. 'cprevious') end
+    M.prev(vim.v.count1)
+  end, 'orca: previous file' },
+  { 'mark', function() M.mark() end, 'orca: toggle reviewed and advance' },
+  { 'close', function() M.close() end, 'orca: close review' },
+}
+
+local function resolve_mappings()
+  local user = vim.g.orca_mappings
+  if user == false then return {} end
+  local maps = vim.tbl_extend('force', {}, DEFAULT_MAPPINGS)
+  if type(user) == 'table' then
+    for action, lhs in pairs(user) do
+      if not VALID_ACTIONS[action] then
+        notify(('vim.g.orca_mappings: unknown action %q (valid: next, prev, mark, close, open)')
+          :format(action), vim.log.levels.WARN)
+      elseif lhs == false then
+        maps[action] = nil
+      else
+        maps[action] = lhs
+      end
+    end
+  end
+  return maps
+end
 
 local function buf_map(buf, lhs, fn, desc)
   vim.keymap.set('n', lhs, fn, { buffer = buf, nowait = true, desc = desc })
@@ -33,7 +88,10 @@ local function buf_map(buf, lhs, fn, desc)
 end
 
 local function attach_maps(buf)
-  for _, m in ipairs(MAPS) do buf_map(buf, m[1], m[2], m[3]) end
+  for _, a in ipairs(ACTIONS) do
+    local lhs = session.maps[a[1]]
+    if lhs then buf_map(buf, lhs, a[2], a[3]) end
+  end
 end
 
 local function detach_maps(buf)
@@ -52,7 +110,12 @@ local function attach_qf_maps()
   local buf = session.qfbuf
   if not (buf and vim.api.nvim_buf_is_valid(buf)) then return end
   attach_maps(buf)
-  buf_map(buf, '<CR>', function() M.open(vim.fn.line('.')) end, "orca: open this file's diff")
+  if session.maps.open then
+    buf_map(buf, session.maps.open, function()
+      if foreign_list() then return native(vim.fn.line('.') .. 'cc') end
+      M.open(vim.fn.line('.'))
+    end, "orca: open this file's diff")
+  end
 end
 
 local function entry_text(e)
@@ -201,6 +264,7 @@ function M.review(range)
     range = base .. '...' .. head,
     mapped = {},
     by_path = {},
+    maps = resolve_mappings(),
   }
   for i, e in ipairs(entries) do session.by_path[e.path] = i end
   vim.api.nvim_create_augroup(AUGROUP, { clear = true })
@@ -227,8 +291,18 @@ function M.review(range)
     callback = follow_navigation,
   })
 
-  notify(('%d file%s in %s — <CR> opens a diff, ]f/[f move, <leader>rm marks reviewed')
-    :format(#entries, #entries == 1 and '' or 's', session.range))
+  local m = session.maps
+  local hints = {}
+  if m.open then hints[#hints + 1] = m.open .. ' opens a diff' end
+  if m.next and m.prev then
+    hints[#hints + 1] = ('%s/%s move'):format(m.next, m.prev)
+  elseif m.next or m.prev then
+    hints[#hints + 1] = (m.next or m.prev) .. ' moves'
+  end
+  -- Unbound by default; naming the command keeps the ✓ layer discoverable.
+  hints[#hints + 1] = (m.mark or ':OrcaReviewMark') .. ' marks reviewed'
+  notify(('%d file%s in %s%s'):format(#entries, #entries == 1 and '' or 's', session.range,
+    #hints > 0 and (' — ' .. table.concat(hints, ', ')) or ''))
   M.open(1)
 end
 
@@ -274,24 +348,27 @@ function M.open(idx)
   if entry.binary then notify(entry.path .. ' is binary — opened without a diff') end
 end
 
-function M.next()
+-- Move count files forward/back (default 1), honoring the native count
+-- contract of ]q/[q. At the edge, a polite message; a count that would
+-- overshoot clamps to the edge (in M.open) instead of erroring.
+function M.next(count)
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
   if session.index >= #session.entries then
     return notify('already at the last file')
   end
-  M.open(session.index + 1)
+  M.open(session.index + (count or 1))
 end
 
-function M.prev()
+function M.prev(count)
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
   if session.index <= 1 then
     return notify('already at the first file')
   end
-  M.open(session.index - 1)
+  M.open(session.index - (count or 1))
 end
 
 -- Toggle reviewed (✓) on the current file. Marking advances to the next
@@ -301,7 +378,8 @@ function M.mark()
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
   if session.index == 0 then
-    return notify('no file open — ]f opens the first', vim.log.levels.WARN)
+    return notify(('no file open — %s opens the first'):format(session.maps.next or ':OrcaReviewNext'),
+      vim.log.levels.WARN)
   end
   local entry = session.entries[session.index]
   entry.reviewed = not entry.reviewed
@@ -323,6 +401,12 @@ function M.close()
   for buf in pairs(session.mapped) do detach_maps(buf) end
   pcall(vim.api.nvim_del_augroup_by_name, AUGROUP)
   session = nil
+end
+
+-- Optional sugar over vim.g.orca_mappings (what lazy.nvim's `opts` calls).
+-- The global stays the single source of truth; nothing requires setup().
+function M.setup(opts)
+  if opts and opts.mappings ~= nil then vim.g.orca_mappings = opts.mappings end
 end
 
 return M

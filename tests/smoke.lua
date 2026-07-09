@@ -26,6 +26,7 @@ local orca = require('orca')
 -- Bare review: trunk...HEAD, trunk resolved from the common dir (main).
 orca.review('')
 local qf = vim.fn.getqflist({ id = 0, items = true, title = true, size = true })
+local orca_qfid = qf.id
 check(qf.title == 'OrcaReview main...HEAD', 'qf title is OrcaReview main...HEAD, got: ' .. qf.title)
 check(qf.size == 5, 'five changed files, got ' .. qf.size)
 local texts = {}
@@ -71,7 +72,10 @@ local name = vim.api.nvim_buf_get_name(0)
 check(name:find('src/b.lua', 1, true) ~= nil, 'right side is working-tree src/b.lua, got ' .. name)
 check(vim.bo.buftype == '', 'right side is a real buffer')
 check(vim.wo.diff, 'right window in diff mode')
-check(vim.fn.maparg(']f', 'n', false, true).buffer == 1, ']f is buffer-local on the right side')
+check(vim.fn.maparg(']q', 'n', false, true).buffer == 1, ']q is buffer-local on the right side')
+-- The default surface is native keys only — nothing leader-shaped ships.
+check(vim.fn.maparg('<leader>rm', 'n', false, true).buffer ~= 1
+  and vim.fn.maparg('<leader>rq', 'n', false, true).buffer ~= 1, 'no leader-shaped defaults')
 -- left side content is the merge-base version
 local lwin = vim.fn.win_getid(vim.fn.winnr('h'))
 local lbuf = vim.api.nvim_win_get_buf(lwin)
@@ -166,6 +170,46 @@ orca.next()
 check(vim.fn.getqflist({ idx = 0 }).idx == before_idx + 1, ':OrcaReviewNext resumes the walk after collapse/reopen')
 check(count_diff_wins() == 2, 'walk resumed with a live diff pair')
 
+-- ]q/[q honor a count (the native contract): 3]q moves three files, an
+-- overshooting count clamps at the list edge, the bare edge case keeps the
+-- polite message and stays put.
+local function qfidx() return vim.fn.getqflist({ idx = 0 }).idx end
+orca.open(1)
+keys('3]q')
+check(qfidx() == 4, '3]q moves three files, got ' .. qfidx())
+keys('9]q')
+check(qfidx() == 5, 'overshooting count clamps to the last file, got ' .. qfidx())
+keys(']q')
+check(qfidx() == 5, 'plain ]q at the edge stays put, got ' .. qfidx())
+keys('2[q')
+check(qfidx() == 3, '2[q moves two files back, got ' .. qfidx())
+
+-- List-identity guard: a foreign list landing in the qf window mid-session
+-- gets native behavior from orca's keys, not a hijacked M.open.
+orca.open(1)
+vim.fn.setqflist({}, ' ', { title = 'foreign', items = {
+  { filename = 'unchanged.txt', lnum = 1, text = 'one' },
+  { filename = 'unchanged.txt', lnum = 1, text = 'two' },
+} })
+vim.cmd('copen')
+keys('1G')
+keys('<CR>')
+check(vim.api.nvim_buf_get_name(0):find('unchanged.txt', 1, true) ~= nil,
+  'guard: <CR> on a foreign list does the stock jump, got ' .. vim.api.nvim_buf_get_name(0))
+vim.cmd('copen')
+keys(']q')
+check(qfidx() == 2 and vim.api.nvim_buf_get_name(0):find('unchanged.txt', 1, true) ~= nil,
+  'guard: ]q on a foreign list runs :cnext, foreign idx ' .. qfidx())
+-- mark never reads the qf window; refresh_qf writes by id, so marking with
+-- a foreign list current updates orca's list without stealing focus back.
+orca.mark()
+check(vim.fn.getqflist({ title = true }).title == 'foreign', 'mark leaves the foreign list current')
+local ours = vim.fn.getqflist({ id = orca_qfid, items = true })
+local marked_by_id = 0
+for _, item in ipairs(ours.items) do if item.text:find('✓', 1, true) then marked_by_id = marked_by_id + 1 end end
+check(marked_by_id == 2, 'mark with a foreign list current still writes ✓ to orca\'s list by id, got ' .. marked_by_id)
+vim.cmd('silent colder') -- back to orca's list for the close checks
+
 -- Close: no scratch buffers survive, diff off everywhere, qf list stays.
 orca.close()
 local leftovers = 0
@@ -179,13 +223,49 @@ for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
   check(not vim.wo[w].diff, 'diff off in window ' .. w)
 end
 check(vim.fn.getqflist({ size = true }).size == 5, 'quickfix list left in place')
-check(vim.fn.maparg(']f', 'n', false, true).buffer ~= 1, 'buffer-local maps removed from real buffer')
+check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'buffer-local maps removed from real buffer')
 
 -- Restart with an explicit range works and replaces the session.
 orca.review('main...feature')
 qf = vim.fn.getqflist({ title = true, size = true })
 check(qf.title == 'OrcaReview main...feature', 'explicit range title, got: ' .. qf.title)
 orca.close()
+
+-- vim.g.orca_mappings resolves at session start: per-action override,
+-- per-action disable, untouched actions keep their defaults, and the
+-- unbound-by-default mark attaches when the user opts in.
+vim.g.orca_mappings = { next = ')f', prev = false, mark = '<leader>v' }
+orca.review('')
+check(vim.fn.maparg(')f', 'n', false, true).buffer == 1, 'orca_mappings: next remapped to )f')
+check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'orca_mappings: default ]q gone when remapped')
+check(vim.fn.maparg('[q', 'n', false, true).buffer ~= 1, 'orca_mappings: prev = false disables the map')
+check(vim.fn.maparg('<leader>v', 'n', false, true).buffer == 1, 'orca_mappings: opt-in mark binding attaches')
+-- and the configured key still drives mark's auto-advance (default
+-- mapleader is backslash, so <leader>v arrives as \v)
+local mark_before = vim.fn.getqflist({ idx = 0 }).idx
+keys('\\v')
+qf = vim.fn.getqflist({ id = 0, items = true, idx = 0 })
+local vmarked = 0
+for _, item in ipairs(qf.items) do if item.text:find('✓', 1, true) then vmarked = vmarked + 1 end end
+check(vmarked == 1 and qf.idx == mark_before + 1,
+  ('configured mark key marks and auto-advances, got %d marked, idx %d→%d'):format(vmarked, mark_before, qf.idx))
+orca.close()
+
+-- setup() is sugar over the same variable; false drops every map, and the
+-- stock qf <CR> still opens pairs through the navigation follower.
+orca.setup({ mappings = false })
+check(vim.g.orca_mappings == false, 'setup({mappings = ...}) writes vim.g.orca_mappings')
+orca.review('')
+check(vim.fn.maparg(')f', 'n', false, true).buffer ~= 1
+  and vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'mappings = false: no session maps set')
+vim.cmd('copen')
+check(vim.fn.maparg('<CR>', 'n', false, true).desc == nil, 'mappings = false: qf <CR> not claimed')
+keys('2G')
+keys('<CR>')
+drain(function() return count_diff_wins() == 2 end)
+check(count_diff_wins() == 2, 'mappings = false: stock qf <CR> still opens the pair via BufEnter follow')
+orca.close()
+vim.g.orca_mappings = nil
 
 out(failed == 0 and 'SMOKE PASS' or ('SMOKE FAIL (' .. failed .. ')'))
 if failed > 0 then vim.cmd('cquit') end

@@ -7,7 +7,7 @@ fully-configured Neovim: a quickfix list of changed files, native side-by-side d
 pairs, your LSP, your colors, your muscle memory.
 
 It happens to work standalone in any git repository — no Claude Code session, no
-`setup()`, no dependencies.
+required `setup()`, no dependencies.
 
 ## Install
 
@@ -42,9 +42,21 @@ The right diff side is the real working-tree buffer — LSP attaches, and fixing
 during review is a feature. Renames, additions, deletions, and binary files are all
 handled; hunk motions (`]c`, `[c`, `do`, `dp`) are native diff mode.
 
-Buffer-local maps in session-owned buffers: `]f` / `[f` next/previous file,
-`<leader>rm` mark, `<leader>rq` close, and `<CR>` in the quickfix window opens that
-file's pair.
+Buffer-local maps in session-owned buffers, every one a native key upgraded in place:
+`]q` / `[q` next/previous file (counts work — `3]q` moves three), and `<CR>` in the
+quickfix window opens that file's pair. If another list lands in the quickfix window
+mid-session (`:grep`, LSP references), the keys fall back to stock behavior until
+orca's list is current again. Mark and close ship unbound — the commands are the API,
+and one line adds keys:
+
+```lua
+vim.g.orca_mappings = { mark = "<leader>rm", close = "<leader>rq" }
+```
+
+`vim.g.orca_mappings` is read when a session starts: a table overrides per action
+(keys `next`, `prev`, `mark`, `close`, `open`; `false` drops one map), or `false`
+wholesale for commands only. `require('orca').setup{ mappings = ... }` is optional
+sugar over the same variable, so lazy.nvim's `opts` works too.
 
 `:checkhealth orca` answers "why doesn't `:OrcaReview` work here".
 
