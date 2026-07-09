@@ -19,6 +19,7 @@ git -C "$SEED" config user.email t@t
 printf 'one\n' > "$SEED/a.txt"
 printf 'P1\000\t\bbinary1\n' > "$SEED/img.bin"
 printf 'keepme\n' > "$SEED/renamed-from.txt"
+printf 'same\n' > "$SEED/unchanged.txt"
 mkdir "$SEED/src"
 printf 'line1\nline2\nline3\n' > "$SEED/src/b.lua"
 git -C "$SEED" add -A

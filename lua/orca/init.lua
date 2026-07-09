@@ -94,8 +94,11 @@ local function teardown_pair()
   if not pair then return end
   session.pair = nil
   session.last_win = pair.right_win
+  local was = session.navigating
+  session.navigating = true
   for _, buf in ipairs(pair.bufs) do detach_maps(buf) end
   pairview.close(pair)
+  session.navigating = was
 end
 
 -- The window the next diff pair's right side goes into: the previous pair's,
@@ -114,6 +117,54 @@ local function pick_window()
   end
   vim.cmd('topleft new')
   return vim.api.nvim_get_current_win()
+end
+
+-- While the session lives, the diff pair follows navigation: entering a
+-- changed file by any route (picker, gd, :edit) opens its pair around the
+-- window the user landed in; a foreign buffer landing in a pair window
+-- collapses the pair. The collapse is load-bearing, not polish — 'diff' and
+-- 'scrollbind' are window-local, so the wandered-to buffer would otherwise
+-- inherit diff mode against the previous file's still-open scratch. The
+-- session itself survives a collapse.
+local function follow_navigation()
+  if not session or session.navigating then return end
+  -- Pickers preview into floats; entering one must not collapse anything.
+  if vim.api.nvim_win_get_config(0).relative ~= '' then return end
+  local buf = vim.api.nvim_get_current_buf()
+  if buf == session.qfbuf then return end
+  local pair = session.pair
+  if pair then
+    for _, owned in ipairs({ pair.bufs, pair.scratch }) do
+      if vim.tbl_contains(owned, buf) then return end
+    end
+  end
+
+  local idx
+  local prefix = session.toplevel .. '/'
+  local name = vim.api.nvim_buf_get_name(buf)
+  if name:sub(1, #prefix) == prefix then
+    idx = session.by_path[name:sub(#prefix + 1)]
+  end
+
+  if idx then
+    -- Re-entering the file whose pair is already current must be a no-op:
+    -- a binary "pair" is a plain :edit of the very buffer just entered,
+    -- and reopening it here would loop open → BufEnter → open.
+    if idx == session.index and pair then return end
+    session.last_win = vim.api.nvim_get_current_win()
+    -- Deferred one tick: this BufEnter may be firing mid-:close (focus
+    -- falling back into a changed file's window), and the pair's split is
+    -- illegal while another window is closing (E242).
+    local s = session
+    vim.schedule(function()
+      if session ~= s then return end
+      if idx == session.index and session.pair then return end
+      M.open(idx)
+    end)
+  elseif pair then
+    local cur = vim.api.nvim_get_current_win()
+    if cur == pair.right_win or cur == pair.left_win then teardown_pair() end
+  end
 end
 
 -- Start (or restart) a review session. `range` is '<base>...<head>', a bare
@@ -149,7 +200,9 @@ function M.review(range)
     toplevel = toplevel,
     range = base .. '...' .. head,
     mapped = {},
+    by_path = {},
   }
+  for i, e in ipairs(entries) do session.by_path[e.path] = i end
   vim.api.nvim_create_augroup(AUGROUP, { clear = true })
 
   vim.fn.setqflist({}, ' ', { title = 'OrcaReview ' .. session.range, items = qf_items() })
@@ -165,6 +218,14 @@ function M.review(range)
     buffer = session.qfbuf,
     callback = function() attach_qf_maps() end,
   })
+  -- One session-wide hook covers every navigation route. nested, so the
+  -- :edit it triggers still fires filetype/LSP autocmds; re-entrancy is cut
+  -- by session.navigating instead.
+  vim.api.nvim_create_autocmd('BufEnter', {
+    group = AUGROUP,
+    nested = true,
+    callback = follow_navigation,
+  })
 
   notify(('%d file%s in %s — <CR> opens a diff, ]f/[f move, <leader>rm marks reviewed')
     :format(#entries, #entries == 1 and '' or 's', session.range))
@@ -177,11 +238,14 @@ function M.open(idx)
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
   idx = math.max(1, math.min(idx, #session.entries))
+  session.navigating = true
   teardown_pair()
   session.index = idx
   local entry = session.entries[idx]
 
-  local pair, err = pairview.open(entry, session.mergebase, session.toplevel, pick_window())
+  local ok, pair, err = pcall(pairview.open, entry, session.mergebase, session.toplevel, pick_window())
+  session.navigating = false
+  if not ok then pair, err = nil, pair end
   if not pair then
     refresh_qf()
     return notify(('%s: %s'):format(entry.path, err or 'cannot open'), vim.log.levels.ERROR)

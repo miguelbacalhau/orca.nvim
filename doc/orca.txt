@@ -39,6 +39,14 @@ COMMANDS                                                        *orca-commands*
         `(binary)` in the list. A dirty working tree is diffed as-is —
         what you review is what would merge.
 
+        The pair follows navigation. Entering a changed file by any route
+        — a fuzzy finder, |gd|, plain |:edit| — opens its diff pair around
+        the window you landed in, quickfix selection synced. Wandering off
+        to a buffer outside the review collapses the pair (left split
+        closed, diff mode off); the session stays alive, and the quickfix
+        window, |:OrcaReviewNext|, or entering any changed file resumes
+        the walk.
+
                                                              *:OrcaReviewClose*
 :OrcaReviewClose
         End the session: diff mode off, scratch buffers wiped, keymaps

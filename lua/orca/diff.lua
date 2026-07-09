@@ -82,7 +82,9 @@ end
 
 -- Tear a pair down: diff mode off, the left split closed (closing it wipes
 -- its scratch buffer), any scratch still displayed wiped explicitly. The
--- right window survives as the target for the next pair.
+-- right window survives as the target for the next pair. A window the user
+-- already stole for another buffer (`:edit` in a pair split) is only
+-- diffoff'd, never closed — the buffer they navigated to must stay visible.
 function M.close(pair)
   for _, key in ipairs({ 'left_win', 'right_win' }) do
     local w = pair[key]
@@ -90,7 +92,8 @@ function M.close(pair)
       vim.api.nvim_win_call(w, function() vim.cmd('diffoff') end)
     end
   end
-  if pair.left_win and vim.api.nvim_win_is_valid(pair.left_win) then
+  if pair.left_win and vim.api.nvim_win_is_valid(pair.left_win)
+    and vim.tbl_contains(pair.scratch, vim.api.nvim_win_get_buf(pair.left_win)) then
     pcall(vim.api.nvim_win_close, pair.left_win, true)
   end
   for _, buf in ipairs(pair.scratch) do
