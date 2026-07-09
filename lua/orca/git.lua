@@ -27,18 +27,35 @@ function M.in_repo()
   return git({ 'rev-parse', '--git-dir' }) ~= nil
 end
 
--- The default review base: HEAD of the *common* git dir. In orca's
--- bare-repo-with-worktrees layout that is the bare repo's symbolic HEAD —
--- the trunk branch. A default, not discovery; explicit ranges bypass it.
+-- The default review base — a default, not discovery; explicit ranges
+-- bypass it. Resolved in tiers:
+--  1. In a linked worktree, the symbolic HEAD of the *common* git dir — in
+--     orca's bare-repo-with-worktrees layout, the bare repo's trunk branch.
+--  2. Otherwise HEAD is the branch under review, not a trunk signal (a
+--     normal checkout's common dir is its own .git): origin/HEAD names the
+--     remote's default branch; prefer its local twin.
+--  3. Last resort: the first of main/master/trunk that exists locally.
 function M.trunk()
-  local out = git({ 'rev-parse', '--git-common-dir' })
-  if not out or not out[1] then return nil, 'not inside a git repository' end
-  local common = vim.fn.fnamemodify(out[1], ':p')
-  local ref = git({ '--git-dir=' .. common, 'symbolic-ref', '--short', 'HEAD' })
-  if not ref or not ref[1] or ref[1] == '' then
-    return nil, 'cannot resolve a trunk branch — pass an explicit range: :OrcaReview <base>...<head>'
+  local gitdir = git({ 'rev-parse', '--git-dir' })
+  local common = git({ 'rev-parse', '--git-common-dir' })
+  if not (gitdir and gitdir[1] and common and common[1]) then
+    return nil, 'not inside a git repository'
   end
-  return ref[1]
+  if vim.fn.fnamemodify(gitdir[1], ':p') ~= vim.fn.fnamemodify(common[1], ':p') then
+    local ref = git({ '--git-dir=' .. vim.fn.fnamemodify(common[1], ':p'),
+      'symbolic-ref', '--quiet', '--short', 'HEAD' })
+    if ref and ref[1] and ref[1] ~= '' then return ref[1] end
+  end
+  local origin = git({ 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD' })
+  local name = origin and origin[1] and origin[1]:match('^origin/(.+)$')
+  if name then
+    if git({ 'rev-parse', '--verify', '--quiet', 'refs/heads/' .. name }) then return name end
+    return origin[1]
+  end
+  for _, cand in ipairs({ 'main', 'master', 'trunk' }) do
+    if git({ 'rev-parse', '--verify', '--quiet', 'refs/heads/' .. cand }) then return cand end
+  end
+  return nil, 'cannot resolve a trunk branch — pass an explicit range: :OrcaReview <base>...<head>'
 end
 
 function M.merge_base(base, head)

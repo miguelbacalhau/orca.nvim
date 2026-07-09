@@ -9,6 +9,12 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# Isolate nvim from the caller's state dirs: --clean skips user config but
+# still writes swap/state files, which fails in restricted environments
+# (E303). Writable XDG dirs inside the fixture plus -n (no swap) below.
+export XDG_CONFIG_HOME="$TMP/xdg/config" XDG_DATA_HOME="$TMP/xdg/data" \
+  XDG_STATE_HOME="$TMP/xdg/state" XDG_CACHE_HOME="$TMP/xdg/cache"
+
 # --- seed repo: main with an init commit, feature branched off it,
 #     main advanced afterwards so the merge-base diff has something to exclude.
 SEED="$TMP/seed"
@@ -38,6 +44,7 @@ git -C "$SEED" mv renamed-from.txt renamed-to.txt
 printf 'line1\nline2 CHANGED\nline3\nline4\n' > "$SEED/src/b.lua"
 git -C "$SEED" add -A
 git -C "$SEED" commit -qm change
+git -C "$SEED" checkout -q main # so clones of seed get origin/HEAD = main
 
 # --- fixture: bare repo + .git pointer file + feature worktree
 FIX="$TMP/fixture"
@@ -49,13 +56,39 @@ git -C "$FIX" worktree add -q feature feature
 
 # --- run the smoke test from inside the worktree
 cd "$FIX/feature"
-OUT=$(nvim --clean --headless --cmd "set rtp+=$ROOT" \
+OUT=$(nvim --clean --headless -n --cmd "set rtp+=$ROOT" \
   "+luafile $ROOT/tests/smoke.lua" +qa! 2>&1) || {
   printf '%s\n' "$OUT"
   exit 1
 }
 printf '%s\n' "$OUT"
 case "$OUT" in
-  *"SMOKE PASS"*) exit 0 ;;
+  *"SMOKE PASS"*) ;;
   *) echo 'smoke.lua did not report SMOKE PASS' >&2; exit 1 ;;
+esac
+
+# --- normal (non-worktree) checkout on a feature branch: bare :OrcaReview
+# must default to trunk, not the current branch (regression: the common git
+# dir's HEAD *is* the current branch here, which made the default review
+# empty). The clone's origin/HEAD supplies main.
+CLONE="$TMP/clone"
+git clone -q "$SEED" "$CLONE"
+git -C "$CLONE" checkout -q feature
+cd "$CLONE"
+NOUT=$(nvim --clean --headless -n --cmd "set rtp+=$ROOT" \
+  "+lua require('orca').review('')" \
+  "+lua local q = vim.fn.getqflist({ title = true, size = true }); print(('NORMAL %s %d'):format(q.title, q.size))" \
+  +qa! 2>&1)
+case "$NOUT" in
+  *"NORMAL OrcaReview main...HEAD 5"*) echo 'OK   normal checkout: bare review defaults to main...HEAD' ;;
+  *) printf '%s\n' "$NOUT"; echo 'normal-checkout default range failed' >&2; exit 1 ;;
+esac
+
+# --- same checkout, remote gone: trunk falls back to a local main.
+git -C "$CLONE" remote remove origin
+NOUT=$(nvim --clean --headless -n --cmd "set rtp+=$ROOT" \
+  "+lua print('TRUNK=' .. tostring(require('orca.git').trunk()))" +qa! 2>&1)
+case "$NOUT" in
+  *"TRUNK=main"*) echo 'OK   remote-less checkout: trunk falls back to local main' ;;
+  *) printf '%s\n' "$NOUT"; echo 'remote-less trunk fallback failed' >&2; exit 1 ;;
 esac

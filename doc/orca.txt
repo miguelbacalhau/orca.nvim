@@ -20,9 +20,12 @@ COMMANDS                                                        *orca-commands*
         {range} is `<base>...<head>`, always in the three-dot merge-base
         sense: only what the branch changed, never what trunk gained since
         the branch point. A bare `<base>` implies `...HEAD`; no argument
-        defaults to `<trunk>...HEAD`, where trunk is the symbolic HEAD of
-        the repository's common git dir (the bare repo's HEAD in orca's
-        bare-with-worktrees layout).
+        defaults to `<trunk>...HEAD`. Trunk resolves in tiers: in a
+        linked worktree, the symbolic HEAD of the common git dir (the
+        bare repo's HEAD in orca's bare-with-worktrees layout); in a
+        normal checkout, the branch `origin/HEAD` names (preferring its
+        local twin), else the first of `main`/`master`/`trunk` that
+        exists locally.
 
         The changed files populate the |quickfix| list (`M`/`A`/`D`/`R`
         status in each entry) and the first file's diff pair opens
