@@ -1,0 +1,108 @@
+*orca.txt*  Branch review for orca deliverables, in your own editor.
+
+                                                        *orca* *orca.nvim*
+
+orca.nvim opens a branch review — the merge-base diff of a deliverable
+branch against trunk — inside your fully-configured Neovim: your LSP, your
+colors, your muscle memory. It is the human half of review; an orca run's
+independent reviewer already attacked the diff mechanically, and this is
+the look-through before `git merge --no-ff`.
+
+It works standalone in any git repository: no Claude Code session, no
+setup(), no configuration, no dependencies.
+
+==============================================================================
+COMMANDS                                                        *orca-commands*
+
+                                                                  *:OrcaReview*
+:OrcaReview [{range}]
+        Start (or restart — at most one session exists) a review session.
+        {range} is `<base>...<head>`, always in the three-dot merge-base
+        sense: only what the branch changed, never what trunk gained since
+        the branch point. A bare `<base>` implies `...HEAD`; no argument
+        defaults to `<trunk>...HEAD`, where trunk is the symbolic HEAD of
+        the repository's common git dir (the bare repo's HEAD in orca's
+        bare-with-worktrees layout).
+
+        The changed files populate the |quickfix| list (`M`/`A`/`D`/`R`
+        status in each entry) and the first file's diff pair opens
+        immediately. <CR> on a quickfix entry opens that file's pair:
+        the working-tree file on the right — a real buffer, LSP attaches,
+        editable — and the merge-base version on the left in a read-only
+        scratch buffer. Native diff mode drives both, so |]c|, |[c|, |do|
+        and |dp| work as everywhere else.
+
+        Edge cases: added files diff against an empty left side; deleted
+        files show the removed content on the left with an empty right
+        (there is no working-tree file); renames are detected and load the
+        old path at the merge-base; binary files open plainly, marked
+        `(binary)` in the list. A dirty working tree is diffed as-is —
+        what you review is what would merge.
+
+                                                             *:OrcaReviewClose*
+:OrcaReviewClose
+        End the session: diff mode off, scratch buffers wiped, keymaps
+        removed. The quickfix list is left in place — it is yours.
+        Quitting Neovim cleans up the same way (scratch buffers are
+        |nofile| + `bufhidden=wipe`; nothing persists).
+
+                                            *:OrcaReviewNext* *:OrcaReviewPrev*
+:OrcaReviewNext
+:OrcaReviewPrev
+        Move to the next/previous changed file, tearing down the current
+        pair and opening the new one.
+
+                                                              *:OrcaReviewMark*
+:OrcaReviewMark
+        Toggle reviewed on the current file — a `✓` prefix on its quickfix
+        entry. Marking advances to the next unreviewed file (wrapping past
+        the end once); un-marking stays put. Marks are session-only and
+        die with Neovim.
+
+==============================================================================
+KEYMAPS                                                          *orca-keymaps*
+
+Buffer-local only, set in the buffers the session owns (both diff sides and
+the quickfix window) and removed when the session lets go of them. The
+commands above are the public API; map your own globals if you want them.
+
+        ]f              :OrcaReviewNext
+        [f              :OrcaReviewPrev
+        <leader>rm      :OrcaReviewMark
+        <leader>rq      :OrcaReviewClose
+        <CR>            (quickfix window only) open this file's diff pair
+
+|]c| and |[c| hunk motions are native diff mode — nothing to define.
+
+==============================================================================
+INSTALLATION                                                     *orca-install*
+
+Install with your plugin manager, like any other plugin. lazy.nvim: >
+
+        { "miguelbacalhau/orca.nvim" }
+<
+No setup() call, no configuration, no dependencies — the spec above is
+complete. Any manager that installs from GitHub works the same way;
+updates ride the manager's own update flow.
+
+Without a plugin manager, clone into Neovim's native packpath
+(|packages|): >
+
+        git clone https://github.com/miguelbacalhau/orca.nvim \
+            ~/.local/share/nvim/site/pack/orca/start/orca.nvim
+<
+(the parent directory is `stdpath('data')` — check with
+`:echo stdpath('data')` if yours differs), then generate help tags with
+`:helptags ALL`. Updating is `git pull` in the clone; uninstalling is
+removing the directory. Caveat: native packages need 'packpath' intact —
+configs that reset it (some plugin managers do) ignore the clone
+silently, in which case the manager route above is the fix.
+
+If you use orca (the Claude Code plugin), `/orca:doctor` checks the
+install and prescribes whichever path fits.
+
+`:checkhealth orca` verifies the setup: git ≥ 2.5 on PATH, inside a git
+repository, trunk resolvable.
+
+==============================================================================
+vim:tw=78:ts=8:noet:ft=help:norl:
