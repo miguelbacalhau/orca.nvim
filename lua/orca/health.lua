@@ -1,6 +1,6 @@
 -- :checkhealth orca — answers "why doesn't :OrcaReview work here" without a
 -- bug report: plugin reachable, git present and new enough, inside a repo,
--- trunk resolvable.
+-- orca-managed (.orca/ at the repo root), trunk resolvable.
 
 local M = {}
 
@@ -41,6 +41,15 @@ function M.check()
     return
   end
   ok('inside a git repository')
+
+  local root = git.repo_root()
+  if root and vim.fn.isdirectory(root .. '/.orca') == 1 then
+    ok('orca-managed repository — .orca/ at ' .. root)
+  else
+    err(('no .orca/ at %s — :OrcaReview requires an orca-managed repository')
+      :format(root or '<unresolvable repo root>'),
+      'run /orca:init in a Claude Code session with the orca plugin')
+  end
 
   local trunk, terr = git.trunk()
   if trunk then

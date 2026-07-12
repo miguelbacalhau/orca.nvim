@@ -1,12 +1,16 @@
--- orca.nvim — branch review inside the user's own Neovim.
+-- orca.nvim — branch review inside the user's own Neovim, the human half
+-- of an orca run's review. Orca-managed repositories only: .orca/ must
+-- exist at the repo root.
 --
 -- A session is the merge-base diff of <base>...<head>: changed files as a
--- quickfix list, one side-by-side diff pair open at a time. State is
--- module-local and dies with the session; nothing is written anywhere — no
--- files, no git state, no marks beyond the in-memory ✓.
+-- quickfix list, one side-by-side diff pair open at a time. Session state
+-- is module-local and dies with the session; the one artifact that
+-- outlives it is the review-notes file (orca/notes.lua) — line-anchored
+-- comments under .orca/review-notes/ that flow back into the orca run.
 
 local git = require('orca.git')
 local pairview = require('orca.diff')
+local notes = require('orca.notes')
 
 local M = {}
 
@@ -17,20 +21,21 @@ local function notify(msg, level)
   vim.notify('orca: ' .. msg, level or vim.log.levels.INFO)
 end
 
--- Buffer-local convenience maps; the :OrcaReview* commands are the public
--- API. Set only in buffers the session owns, removed when it lets go.
+-- Buffer-local convenience maps; the :Orca* commands are the public API.
+-- Set only in buffers the session owns, removed when it lets go.
 -- vim.g.orca_mappings reshapes them: a table overrides per action (false
 -- drops one), false wholesale drops them all. Resolved once per session.
 -- Every default is a native key upgraded in place — orca never binds a key
--- that doesn't already mean what orca makes it do. mark/close ship unbound
--- (no native key means what they do); the commands and config keys remain.
+-- that doesn't already mean what orca makes it do. comment/close ship
+-- unbound (no native key means what they do); the commands and config keys
+-- remain.
 local DEFAULT_MAPPINGS = {
   next = ']q',
   prev = '[q',
   open = '<CR>', -- quickfix window only
 }
 
-local VALID_ACTIONS = { next = true, prev = true, mark = true, close = true, open = true }
+local VALID_ACTIONS = { next = true, prev = true, comment = true, close = true, open = true }
 
 -- List-identity guard: another list can land in the qf window mid-session
 -- (:grep, LSP references — usually accidental), and orca's keys must not
@@ -49,6 +54,8 @@ local function native(cmd)
   end
 end
 
+-- Rows are { action, rhs-or-fn, desc [, x-mode rhs] } — comment also maps
+-- in visual mode, where the command's range anchors the whole selection.
 local ACTIONS = {
   { 'next', function()
     if foreign_list() then return native(vim.v.count1 .. 'cnext') end
@@ -58,7 +65,8 @@ local ACTIONS = {
     if foreign_list() then return native(vim.v.count1 .. 'cprevious') end
     M.prev(vim.v.count1)
   end, 'orca: previous file' },
-  { 'mark', function() M.mark() end, 'orca: toggle reviewed and advance' },
+  { 'comment', function() M.comment(vim.fn.line('.'), vim.fn.line('.')) end,
+    'orca: comment on this line', ':OrcaComment<CR>' },
   { 'close', function() M.close() end, 'orca: close review' },
 }
 
@@ -69,7 +77,7 @@ local function resolve_mappings()
   if type(user) == 'table' then
     for action, lhs in pairs(user) do
       if not VALID_ACTIONS[action] then
-        notify(('vim.g.orca_mappings: unknown action %q (valid: next, prev, mark, close, open)')
+        notify(('vim.g.orca_mappings: unknown action %q (valid: next, prev, comment, close, open)')
           :format(action), vim.log.levels.WARN)
       elseif lhs == false then
         maps[action] = nil
@@ -81,8 +89,8 @@ local function resolve_mappings()
   return maps
 end
 
-local function buf_map(buf, lhs, fn, desc)
-  vim.keymap.set('n', lhs, fn, { buffer = buf, nowait = true, desc = desc })
+local function buf_map(buf, lhs, rhs, desc, mode)
+  vim.keymap.set(mode or 'n', lhs, rhs, { buffer = buf, nowait = true, desc = desc })
   session.mapped[buf] = session.mapped[buf] or {}
   session.mapped[buf][lhs] = true
 end
@@ -90,14 +98,19 @@ end
 local function attach_maps(buf)
   for _, a in ipairs(ACTIONS) do
     local lhs = session.maps[a[1]]
-    if lhs then buf_map(buf, lhs, a[2], a[3]) end
+    if lhs then
+      buf_map(buf, lhs, a[2], a[3])
+      if a[4] then buf_map(buf, lhs, a[4], a[3], 'x') end
+    end
   end
 end
 
 local function detach_maps(buf)
   if vim.api.nvim_buf_is_valid(buf) then
     for lhs in pairs(session.mapped[buf] or {}) do
-      pcall(vim.keymap.del, 'n', lhs, { buffer = buf })
+      for _, mode in ipairs({ 'n', 'x' }) do
+        pcall(vim.keymap.del, mode, lhs, { buffer = buf })
+      end
     end
   end
   session.mapped[buf] = nil
@@ -124,7 +137,6 @@ local function entry_text(e)
     text = ('%s %s → %s'):format(e.status, e.old_path, e.path)
   end
   if e.binary then text = text .. ' (binary)' end
-  if e.reviewed then text = '✓ ' .. text end
   return text
 end
 
@@ -248,6 +260,17 @@ function M.review(range)
 
   local toplevel, terr = git.toplevel()
   if not toplevel then return notify(terr, vim.log.levels.ERROR) end
+
+  -- Orca-only gate: the plugin is the human half of orca's review, not a
+  -- general diff tool. .orca/ lives at the repo root — the parent of the
+  -- common git dir, the same rule the orca skills use.
+  local root, rerr = git.repo_root()
+  if not root then return notify(rerr, vim.log.levels.ERROR) end
+  if vim.fn.isdirectory(root .. '/.orca') == 0 then
+    return notify(('no .orca/ at %s — orca.nvim reviews orca-managed repositories; run /orca:init first')
+      :format(root), vim.log.levels.ERROR)
+  end
+
   local mergebase, mberr = git.merge_base(base, head)
   if not mergebase then return notify(mberr, vim.log.levels.ERROR) end
   local entries, derr = git.changed_files(mergebase, head)
@@ -291,6 +314,10 @@ function M.review(range)
     callback = follow_navigation,
   })
 
+  -- The notes layer: existing comments for this branch load here, so
+  -- multi-sitting reviews and orca's resolutions show up immediately.
+  local loaded = notes.start({ root = root, toplevel = toplevel, range = session.range, head = head })
+
   local m = session.maps
   local hints = {}
   if m.open then hints[#hints + 1] = m.open .. ' opens a diff' end
@@ -299,9 +326,10 @@ function M.review(range)
   elseif m.next or m.prev then
     hints[#hints + 1] = (m.next or m.prev) .. ' moves'
   end
-  -- Unbound by default; naming the command keeps the ✓ layer discoverable.
-  hints[#hints + 1] = (m.mark or ':OrcaReviewMark') .. ' marks reviewed'
-  notify(('%d file%s in %s%s'):format(#entries, #entries == 1 and '' or 's', session.range,
+  -- Unbound by default; naming the command keeps commenting discoverable.
+  hints[#hints + 1] = (m.comment or ':OrcaComment') .. ' comments a line'
+  notify(('%d file%s in %s%s%s'):format(#entries, #entries == 1 and '' or 's', session.range,
+    loaded > 0 and (', %d comment%s loaded'):format(loaded, loaded == 1 and '' or 's') or '',
     #hints > 0 and (' — ' .. table.concat(hints, ', ')) or ''))
   M.open(1)
 end
@@ -326,6 +354,11 @@ function M.open(idx)
   end
   session.pair = pair
   for _, buf in ipairs(pair.bufs) do attach_maps(buf) end
+  -- Anchor this file's comments in the working-tree side (deleted files
+  -- have none — their right side is a scratch).
+  if not entry.binary and entry.status ~= 'D' then
+    notes.decorate(pair.bufs[#pair.bufs], entry.path)
+  end
 
   -- If a scratch side goes away by any route (teardown, :bwipeout, window
   -- juggling), diff mode must not outlive it on the survivor.
@@ -371,32 +404,49 @@ function M.prev(count)
   M.open(session.index - (count or 1))
 end
 
--- Toggle reviewed (✓) on the current file. Marking advances to the next
--- unreviewed file (wrapping once); un-marking stays put.
-function M.mark()
+-- The anchor for :OrcaComment — the current buffer must be the working-
+-- tree (right) side of a changed text file. The left side is a base-
+-- version scratch ("this deletion was wrong" has no working-tree anchor —
+-- v1 punts), and deleted/binary entries have no commentable right side.
+local function comment_target()
   if not session then
-    return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
+    notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
+    return
   end
-  if session.index == 0 then
-    return notify(('no file open — %s opens the first'):format(session.maps.next or ':OrcaReviewNext'),
-      vim.log.levels.WARN)
+  local buf = vim.api.nvim_get_current_buf()
+  local name = vim.api.nvim_buf_get_name(buf)
+  local prefix = session.toplevel .. '/'
+  local idx = name:sub(1, #prefix) == prefix and session.by_path[name:sub(#prefix + 1)]
+  local entry = idx and session.entries[idx]
+  if not entry or entry.binary or vim.bo[buf].buftype ~= '' then
+    notify('comments anchor to the working-tree side of a changed text file', vim.log.levels.WARN)
+    return
   end
-  local entry = session.entries[session.index]
-  entry.reviewed = not entry.reviewed
-  refresh_qf()
-  if not entry.reviewed then return end
-  local n = #session.entries
-  for step = 1, n do
-    local i = ((session.index - 1 + step) % n) + 1
-    if not session.entries[i].reviewed then return M.open(i) end
-  end
-  notify('review complete — every file marked ✓')
+  return entry.path, buf
 end
 
--- End the session: diff pair torn down, scratch buffers wiped, keymaps
--- removed, augroup cleared. The quickfix list stays — it is the user's.
+-- Create or edit the review comment on the given line(s) of the current
+-- buffer: normal mode anchors the cursor line, a visual range the whole
+-- selection; on an already-commented line the existing comment opens for
+-- editing. Input is a small scratch split — :w commits, quitting without
+-- writing aborts, committing empty text deletes.
+function M.comment(line1, line2)
+  local path, buf = comment_target()
+  if path then notes.comment(path, buf, line1, line2) end
+end
+
+-- Delete the comment under the cursor.
+function M.comment_delete()
+  local path = comment_target()
+  if path then notes.delete(path, vim.fn.line('.')) end
+end
+
+-- End the session: notes saved and their extmarks cleared, diff pair torn
+-- down, scratch buffers wiped, keymaps removed, augroup cleared. The
+-- quickfix list stays — it is the user's.
 function M.close()
   if not session then return end
+  notes.stop()
   teardown_pair()
   for buf in pairs(session.mapped) do detach_maps(buf) end
   pcall(vim.api.nvim_del_augroup_by_name, AUGROUP)

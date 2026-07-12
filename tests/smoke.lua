@@ -1,5 +1,6 @@
 -- Headless smoke test for orca.nvim. Run by tests/run.sh from inside the
--- feature worktree of the disposable bare-with-worktrees fixture.
+-- feature worktree of the disposable bare-with-worktrees fixture (which has
+-- .orca/ at the fixture root — the plugin is orca-only).
 local function out(s) io.write(s .. '\n') end
 local failed = 0
 local function check(cond, label)
@@ -7,6 +8,9 @@ local function check(cond, label)
 end
 local function keys(k)
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(k, true, false, true), 'x', false)
+end
+local function drain(cond)
+  vim.wait(1000, cond, 10)
 end
 
 -- A competing FileType-qf autocmd registered BEFORE the session starts,
@@ -22,6 +26,7 @@ vim.api.nvim_create_autocmd('FileType', {
 })
 
 local orca = require('orca')
+local NS = vim.api.nvim_create_namespace('orca_notes')
 
 -- Bare review: trunk...HEAD, trunk resolved from the common dir (main).
 orca.review('')
@@ -38,6 +43,14 @@ out('LIST ' .. table.concat(texts, ' ;; '))
 check(not table.concat(texts, ';'):find('trunk%-only'), 'merge-base diff excludes trunk-only.txt')
 check(table.concat(texts, ';'):find('renamed%-from%.txt → renamed%-to%.txt') ~= nil, 'rename shown as old → new')
 check(table.concat(texts, ';'):find('%(binary%)') ~= nil, 'binary file marked (binary)')
+
+-- The quickfix entry index of the file matching pat, in orca's list.
+local function idx_of(pat)
+  local q = vim.fn.getqflist({ id = 0, items = true })
+  for i, item in ipairs(q.items) do
+    if vim.fn.bufname(item.bufnr):find(pat, 1, true) then return i end
+  end
+end
 
 -- Review auto-opens the first file (deleted a.txt): both sides scratch, diff on.
 local wins = vim.api.nvim_tabpage_list_wins(0)
@@ -62,11 +75,7 @@ check(cur:find('c.txt', 1, true) ~= nil, '<CR> on entry 2 opens its pair despite
 check(vim.wo.diff, 'entry 2 right window is in diff mode')
 
 -- Modified file: right side is the real working-tree buffer, left scratch.
-qf = vim.fn.getqflist({ id = 0, items = true })
-local bidx
-for i, item in ipairs(qf.items) do
-  if vim.fn.bufname(item.bufnr):find('src/b.lua', 1, true) then bidx = i end
-end
+local bidx = idx_of('src/b.lua')
 orca.open(bidx)
 local name = vim.api.nvim_buf_get_name(0)
 check(name:find('src/b.lua', 1, true) ~= nil, 'right side is working-tree src/b.lua, got ' .. name)
@@ -74,7 +83,7 @@ check(vim.bo.buftype == '', 'right side is a real buffer')
 check(vim.wo.diff, 'right window in diff mode')
 check(vim.fn.maparg(']q', 'n', false, true).buffer == 1, ']q is buffer-local on the right side')
 -- The default surface is native keys only — nothing leader-shaped ships.
-check(vim.fn.maparg('<leader>rm', 'n', false, true).buffer ~= 1
+check(vim.fn.maparg('<leader>rc', 'n', false, true).buffer ~= 1
   and vim.fn.maparg('<leader>rq', 'n', false, true).buffer ~= 1, 'no leader-shaped defaults')
 -- left side content is the merge-base version
 local lwin = vim.fn.win_getid(vim.fn.winnr('h'))
@@ -84,13 +93,95 @@ check(table.concat(llines, '\n') == 'line1\nline2\nline3', 'left side holds merg
 check(vim.bo[lbuf].modifiable == false, 'left side read-only')
 check(vim.bo[lbuf].filetype == 'lua', 'left side filetype copied (lua)')
 
--- Mark: ✓ appears and session advances.
-orca.mark()
-qf = vim.fn.getqflist({ id = 0, items = true })
-local marked = 0
-for _, item in ipairs(qf.items) do if item.text:find('✓', 1, true) then marked = marked + 1 end end
-check(marked == 1, 'exactly one ✓ after mark, got ' .. marked)
-check(vim.api.nvim_buf_get_name(0) ~= name, 'mark advanced to another file')
+-- ========================= review notes =========================
+
+-- Discovery: repo root is the parent of the common git dir — in the bare
+-- layout, the worktree's parent, not the worktree itself.
+local root = require('orca.git').repo_root()
+check(root == vim.fn.fnamemodify(vim.fn.getcwd(), ':h'),
+  'repo_root is the worktree parent (bare layout), got ' .. tostring(root))
+local notes_path = root .. '/.orca/review-notes/feature.json'
+check(vim.fn.filereadable(notes_path) == 0, 'no notes file before the first comment (lazy creation)')
+
+local function read_notes()
+  if vim.fn.filereadable(notes_path) == 0 then return nil end
+  return vim.json.decode(table.concat(vim.fn.readfile(notes_path), '\n'),
+    { luanil = { object = true, array = true } })
+end
+
+-- Create: :OrcaComment opens an acwrite scratch split; :w commits and the
+-- whole file is rewritten under .orca/review-notes/<branch>.json.
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+vim.cmd('OrcaComment')
+check(vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) ~= nil,
+  'OrcaComment opens the input scratch, got ' .. vim.api.nvim_buf_get_name(0))
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'first thought', 'second line' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+local data = read_notes()
+check(data ~= nil and data.version == 1, 'notes file written with version 1')
+check(data and data.range == 'main...HEAD', 'range recorded, got ' .. tostring(data and data.range))
+check(data and data.head == require('orca.git').rev('HEAD'), 'head sha recorded')
+local c1 = data and data.comments and data.comments[1]
+check(c1 and c1.file == 'src/b.lua' and c1.line == 2, 'comment anchored at src/b.lua:2')
+check(c1 and c1.text == 'first thought\nsecond line', 'multi-line text preserved')
+check(c1 and c1.quoted == 'line2 CHANGED', 'quoted holds the anchor line text')
+check(c1 and c1.status == 'open', 'new comment is open')
+check(#vim.api.nvim_buf_get_extmarks(0, NS, 0, -1, {}) == 1, 'comment shown as an extmark in the buffer')
+
+-- Edit: :OrcaComment on the commented line prefills; writing rewrites the
+-- one comment instead of adding another.
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+vim.cmd('OrcaComment')
+check(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\n') == 'first thought\nsecond line',
+  'reopening a commented line prefills the existing text')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'edited thought' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+data = read_notes()
+check(data and #data.comments == 1 and data.comments[1].text == 'edited thought',
+  'editing rewrites the comment, no duplicate')
+
+-- The left scratch side politely refuses — comments are right-side only.
+vim.cmd('wincmd h')
+vim.cmd('OrcaComment')
+check(vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil,
+  'left (base) side refuses to comment')
+vim.cmd('wincmd l')
+
+-- Drift: the anchor is an extmark, so an insertion above moves it, and the
+-- next write records the shifted line with the same quoted text.
+vim.fn.append(0, 'inserted top line')
+require('orca.notes').save()
+data = read_notes()
+check(data and data.comments[1].line == 3, 'anchor rides an insertion above (2 → 3), got '
+  .. tostring(data and data.comments[1].line))
+check(data and data.comments[1].quoted == 'line2 CHANGED', 'quoted still describes the anchor line')
+vim.api.nvim_buf_set_lines(0, 0, 1, false, {})
+require('orca.notes').save()
+data = read_notes()
+check(data and data.comments[1].line == 2, 'anchor rides the removal back (3 → 2)')
+vim.bo.modified = false
+
+-- Range comment: a :'<,'>-style range anchors line..end_line.
+vim.cmd('3,4OrcaComment')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'range comment' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+data = read_notes()
+check(data and #data.comments == 2, 'second comment lands next to the first')
+local ranged
+for _, c in ipairs(data and data.comments or {}) do if c.line == 3 then ranged = c end end
+check(ranged ~= nil and ranged.end_line == 4, 'range comment records end_line')
+
+-- Delete: :OrcaCommentDelete anywhere inside the covered range clears it.
+vim.api.nvim_win_set_cursor(0, { 4, 0 })
+vim.cmd('OrcaCommentDelete')
+data = read_notes()
+check(data and #data.comments == 1 and data.comments[1].line == 2,
+  'OrcaCommentDelete removes the covering comment')
+
+-- ======================= navigation (unchanged) =======================
 
 -- The diff pair follows navigation (the session-wide BufEnter handler).
 local function count_diff_wins()
@@ -129,9 +220,6 @@ check(vim.fn.getqflist({ size = true }).size == 5, 'collapse keeps the quickfix 
 -- the window the user is in, quickfix selection synced. Navigation-driven
 -- opens are deferred one tick (mid-:close splits are illegal), so drain
 -- the event loop before asserting.
-local function drain(cond)
-  vim.wait(1000, cond, 10)
-end
 vim.cmd('edit c.txt')
 drain(function() return count_diff_wins() == 2 end)
 check(count_diff_wins() == 2, ':edit of a changed file reopens its pair, diff wins: ' .. count_diff_wins())
@@ -200,14 +288,6 @@ vim.cmd('copen')
 keys(']q')
 check(qfidx() == 2 and vim.api.nvim_buf_get_name(0):find('unchanged.txt', 1, true) ~= nil,
   'guard: ]q on a foreign list runs :cnext, foreign idx ' .. qfidx())
--- mark never reads the qf window; refresh_qf writes by id, so marking with
--- a foreign list current updates orca's list without stealing focus back.
-orca.mark()
-check(vim.fn.getqflist({ title = true }).title == 'foreign', 'mark leaves the foreign list current')
-local ours = vim.fn.getqflist({ id = orca_qfid, items = true })
-local marked_by_id = 0
-for _, item in ipairs(ours.items) do if item.text:find('✓', 1, true) then marked_by_id = marked_by_id + 1 end end
-check(marked_by_id == 2, 'mark with a foreign list current still writes ✓ to orca\'s list by id, got ' .. marked_by_id)
 vim.cmd('silent colder') -- back to orca's list for the close checks
 
 -- Close: no scratch buffers survive, diff off everywhere, qf list stays.
@@ -224,31 +304,63 @@ for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
 end
 check(vim.fn.getqflist({ size = true }).size == 5, 'quickfix list left in place')
 check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'buffer-local maps removed from real buffer')
+check(vim.fn.filereadable(notes_path) == 1, 'notes file survives close — that is the point')
 
--- Restart with an explicit range works and replaces the session.
+-- ================== notes round-trip across sessions ==================
+
+-- Orca's write-back lands in the same file: status/resolution set there
+-- render under the anchor in the next session, and the explicit range
+-- resolves to the same branch key.
+data = read_notes()
+data.comments[1].status = 'addressed'
+data.comments[1].resolution = 'debounced it'
+vim.fn.writefile({ vim.json.encode(data) }, notes_path)
 orca.review('main...feature')
-qf = vim.fn.getqflist({ title = true, size = true })
+qf = vim.fn.getqflist({ title = true })
 check(qf.title == 'OrcaReview main...feature', 'explicit range title, got: ' .. qf.title)
+orca.open(idx_of('src/b.lua'))
+local marks = vim.api.nvim_buf_get_extmarks(0, NS, 0, -1, { details = true })
+check(#marks == 1, 'reloaded comment decorated after restart, got ' .. #marks .. ' extmarks')
+local shown = {}
+for _, vl in ipairs(marks[1] and marks[1][4].virt_lines or {}) do
+  for _, chunk in ipairs(vl) do shown[#shown + 1] = chunk[1] end
+end
+shown = table.concat(shown, '\n')
+check(shown:find('edited thought', 1, true) ~= nil, 'virtual lines carry the comment text')
+check(shown:find('addressed', 1, true) ~= nil and shown:find('debounced it', 1, true) ~= nil,
+  'virtual lines carry orca\'s status and resolution')
 orca.close()
+
+-- Unknown version: the coordination contract fails loud — commenting is
+-- blocked and the file is never touched.
+vim.fn.writefile({ vim.json.encode({ version = 2, comments = {} }) }, notes_path)
+orca.review('')
+orca.open(idx_of('src/b.lua'))
+pcall(vim.cmd, 'OrcaComment') -- pcall: the ERROR-level notify throws in headless
+check(vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil,
+  'unknown notes version blocks commenting')
+orca.close()
+check(table.concat(vim.fn.readfile(notes_path), '\n'):find('"version":2', 1, true) ~= nil,
+  'unknown-version file left untouched')
+vim.fn.delete(notes_path)
 
 -- vim.g.orca_mappings resolves at session start: per-action override,
 -- per-action disable, untouched actions keep their defaults, and the
--- unbound-by-default mark attaches when the user opts in.
-vim.g.orca_mappings = { next = ')f', prev = false, mark = '<leader>v' }
+-- unbound-by-default comment attaches (n and x) when the user opts in.
+vim.g.orca_mappings = { next = ')f', prev = false, comment = '<leader>v' }
 orca.review('')
 check(vim.fn.maparg(')f', 'n', false, true).buffer == 1, 'orca_mappings: next remapped to )f')
 check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'orca_mappings: default ]q gone when remapped')
 check(vim.fn.maparg('[q', 'n', false, true).buffer ~= 1, 'orca_mappings: prev = false disables the map')
-check(vim.fn.maparg('<leader>v', 'n', false, true).buffer == 1, 'orca_mappings: opt-in mark binding attaches')
--- and the configured key still drives mark's auto-advance (default
--- mapleader is backslash, so <leader>v arrives as \v)
-local mark_before = vim.fn.getqflist({ idx = 0 }).idx
+check(vim.fn.maparg('<leader>v', 'n', false, true).buffer == 1, 'orca_mappings: opt-in comment binding attaches')
+check(vim.fn.maparg('<leader>v', 'x', false, true).buffer == 1, 'orca_mappings: comment binding also maps visual mode')
+-- and the configured key still opens the comment input (default mapleader
+-- is backslash, so <leader>v arrives as \v)
+orca.open(idx_of('src/b.lua'))
 keys('\\v')
-qf = vim.fn.getqflist({ id = 0, items = true, idx = 0 })
-local vmarked = 0
-for _, item in ipairs(qf.items) do if item.text:find('✓', 1, true) then vmarked = vmarked + 1 end end
-check(vmarked == 1 and qf.idx == mark_before + 1,
-  ('configured mark key marks and auto-advances, got %d marked, idx %d→%d'):format(vmarked, mark_before, qf.idx))
+check(vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) ~= nil,
+  'configured comment key opens the input, got ' .. vim.api.nvim_buf_get_name(0))
+vim.cmd('quit') -- abort: nothing typed, nothing written
 orca.close()
 
 -- setup() is sugar over the same variable; false drops every map, and the

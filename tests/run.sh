@@ -46,13 +46,16 @@ git -C "$SEED" add -A
 git -C "$SEED" commit -qm change
 git -C "$SEED" checkout -q main # so clones of seed get origin/HEAD = main
 
-# --- fixture: bare repo + .git pointer file + feature worktree
+# --- fixture: bare repo + .git pointer file + feature worktree, orca-managed
+# (.orca/ at the fixture root — the parent of the common git dir, where the
+# plugin must discover it from inside the worktree)
 FIX="$TMP/fixture"
 mkdir "$FIX"
 git clone -q --bare "$SEED" "$FIX/.bare"
 printf 'gitdir: ./.bare\n' > "$FIX/.git"
 git --git-dir="$FIX/.bare" symbolic-ref HEAD refs/heads/main
 git -C "$FIX" worktree add -q feature feature
+mkdir "$FIX/.orca"
 
 # --- run the smoke test from inside the worktree
 cd "$FIX/feature"
@@ -67,6 +70,17 @@ case "$OUT" in
   *) echo 'smoke.lua did not report SMOKE PASS' >&2; exit 1 ;;
 esac
 
+# --- repo without .orca/: the plugin is orca-only and refuses with a
+# pointer at /orca:init.
+cd "$SEED"
+GOUT=$(nvim --clean --headless -n --cmd "set rtp+=$ROOT" \
+  "+lua vim.notify = function(m) print('N: ' .. m) end" \
+  "+lua require('orca').review('')" +qa! 2>&1)
+case "$GOUT" in
+  *"no .orca/"*) echo 'OK   non-orca repo refused with /orca:init pointer' ;;
+  *) printf '%s\n' "$GOUT"; echo 'non-orca gate failed' >&2; exit 1 ;;
+esac
+
 # --- normal (non-worktree) checkout on a feature branch: bare :OrcaReview
 # must default to trunk, not the current branch (regression: the common git
 # dir's HEAD *is* the current branch here, which made the default review
@@ -74,6 +88,7 @@ esac
 CLONE="$TMP/clone"
 git clone -q "$SEED" "$CLONE"
 git -C "$CLONE" checkout -q feature
+mkdir "$CLONE/.orca"
 cd "$CLONE"
 NOUT=$(nvim --clean --headless -n --cmd "set rtp+=$ROOT" \
   "+lua require('orca').review('')" \

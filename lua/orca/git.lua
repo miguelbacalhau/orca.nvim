@@ -27,6 +27,44 @@ function M.in_repo()
   return git({ 'rev-parse', '--git-dir' }) ~= nil
 end
 
+-- Absolute repo root as orca defines it: the parent of the *common* git
+-- dir — the exact rule the orca skills use. In orca's bare-with-worktrees
+-- layout that is the directory holding .bare and every worktree; in a
+-- plain checkout, the toplevel.
+function M.repo_root()
+  local out = git({ 'rev-parse', '--path-format=absolute', '--git-common-dir' })
+  if not out or not out[1] then
+    -- --path-format needs git ≥ 2.31; older gits emit a cwd-relative path.
+    out = git({ 'rev-parse', '--git-common-dir' })
+  end
+  if not out or not out[1] then return nil, 'not inside a git repository' end
+  return vim.fn.fnamemodify(out[1], ':p:h:h')
+end
+
+-- The local branch <rev> names, or nil: HEAD resolves through its symbolic
+-- ref, anything else only if it is a local branch name verbatim (detached
+-- HEAD, shas and remote refs all return nil).
+function M.branch_of(rev)
+  if rev == 'HEAD' then
+    local out = git({ 'symbolic-ref', '--quiet', '--short', 'HEAD' })
+    return out and out[1]
+  end
+  if git({ 'rev-parse', '--verify', '--quiet', 'refs/heads/' .. rev }) then return rev end
+  return nil
+end
+
+-- The commit sha <rev> points at, or nil.
+function M.rev(rev)
+  local out = git({ 'rev-parse', '--verify', '--quiet', rev .. '^{commit}' })
+  return out and out[1]
+end
+
+-- Is <a> an ancestor of <b>? False too when <a> is not a commit here at
+-- all (a recycled branch whose old tip was pruned).
+function M.is_ancestor(a, b)
+  return git({ 'merge-base', '--is-ancestor', a, b }) ~= nil
+end
+
 -- The default review base — a default, not discovery; explicit ranges
 -- bypass it. Resolved in tiers:
 --  1. In a linked worktree, the symbolic HEAD of the *common* git dir — in
@@ -67,7 +105,7 @@ function M.merge_base(base, head)
 end
 
 -- One entry per file changed between the merge-base and head:
--- { status = 'M'|'A'|'D'|'R'|'C'|'T', path, old_path, binary, reviewed }.
+-- { status = 'M'|'A'|'D'|'R'|'C'|'T', path, old_path, binary }.
 -- `path` is the current name, `old_path` the merge-base name (they differ
 -- only for renames/copies); both are relative to the repository root.
 function M.changed_files(mergebase, head)
@@ -85,7 +123,6 @@ function M.changed_files(mergebase, head)
       old_path = fields[2],
       path = fields[#fields],
       binary = (numstat_lines[i] or ''):match('^%-\t%-\t') ~= nil,
-      reviewed = false,
     }
   end
   return entries

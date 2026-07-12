@@ -6,10 +6,12 @@ orca.nvim opens a branch review — the merge-base diff of a deliverable
 branch against trunk — inside your fully-configured Neovim: your LSP, your
 colors, your muscle memory. It is the human half of review; an orca run's
 independent reviewer already attacked the diff mechanically, and this is
-the look-through before `git merge --no-ff`.
+the look-through before `git merge --no-ff`. Comments you write on the way
+persist under `.orca/` and flow back into the run (|orca-notes|).
 
-It works standalone in any git repository: no Claude Code session, no
-required setup(), no dependencies.
+It requires an orca-managed repository: `.orca/` must exist at the repo
+root. In a repo without one, |:OrcaReview| refuses with a pointer at
+`/orca:init`. No required setup(), no dependencies.
 
 ==============================================================================
 COMMANDS                                                        *orca-commands*
@@ -35,6 +37,10 @@ COMMANDS                                                        *orca-commands*
         scratch buffer. Native diff mode drives both, so |]c|, |[c|, |do|
         and |dp| work as everywhere else.
 
+        Any existing review notes for the branch load with the session
+        (|orca-notes|): comments from an earlier sitting reappear at
+        their anchors, and resolutions orca wrote back render under them.
+
         Edge cases: added files diff against an empty left side; deleted
         files show the removed content on the left with an empty right
         (there is no working-tree file); renames are detected and load the
@@ -52,10 +58,11 @@ COMMANDS                                                        *orca-commands*
 
                                                              *:OrcaReviewClose*
 :OrcaReviewClose
-        End the session: diff mode off, scratch buffers wiped, keymaps
-        removed. The quickfix list is left in place — it is yours.
-        Quitting Neovim cleans up the same way (scratch buffers are
-        |nofile| + `bufhidden=wipe`; nothing persists).
+        End the session: review notes saved, diff mode off, scratch
+        buffers wiped, keymaps removed. The quickfix list is left in
+        place — it is yours. Quitting Neovim cleans up the same way
+        (scratch buffers are |nofile| + `bufhidden=wipe`; the only thing
+        that persists is the notes file, and persisting is its job).
 
                                             *:OrcaReviewNext* *:OrcaReviewPrev*
 :OrcaReviewNext
@@ -63,12 +70,74 @@ COMMANDS                                                        *orca-commands*
         Move to the next/previous changed file, tearing down the current
         pair and opening the new one.
 
-                                                              *:OrcaReviewMark*
-:OrcaReviewMark
-        Toggle reviewed on the current file — a `✓` prefix on its quickfix
-        entry. Marking advances to the next unreviewed file (wrapping past
-        the end once); un-marking stays put. Marks are session-only and
-        die with Neovim.
+                                                                 *:OrcaComment*
+:[range]OrcaComment
+        Create or edit the review comment anchored at the cursor line —
+        or, with a visual selection or {range}, at that line range. On a
+        line an existing comment covers, the comment opens for editing
+        (which re-opens it: changed text means any previous resolution no
+        longer answers it).
+
+        Input happens in a small scratch split at the bottom — review
+        comments are multi-line. `:w` (or `:wq`) commits; quitting
+        without writing aborts; committing empty text deletes the
+        comment. Each committed comment is written to the notes file
+        immediately (|orca-notes|) — a crash loses nothing.
+
+        Comments anchor to the working-tree (right) side of the pair
+        only. The left buffer is a base-version scratch; a comment there
+        ("this deletion was wrong") has no stable working-tree anchor and
+        is politely refused, as are deleted and binary entries.
+
+                                                           *:OrcaCommentDelete*
+:OrcaCommentDelete
+        Delete the comment covering the cursor line. (Committing empty
+        text from |:OrcaComment| does the same.)
+
+==============================================================================
+REVIEW NOTES                                                       *orca-notes*
+
+Comments persist to a findings-adjacent JSON file that orca (the Claude
+Code plugin's skills) consumes: >
+
+        .orca/review-notes/<key>.json
+<
+`<key>` is the head branch with anything outside `[A-Za-z0-9._-]` replaced
+by `-` (or the sanitized full range when head is not a branch — detached
+HEAD, a sha). The repo root is the parent of the common git dir — the same
+rule the orca skills use, so it works from inside any worktree of orca's
+bare-repo layout and in a plain checkout alike. Everything is derived from
+git state: quitting Neovim on Tuesday and reopening the worktree on
+Wednesday finds the same file, with no launch-time handoff. The file is
+created lazily on the first comment — a comment-less review leaves no
+trace — and deleting the last comment removes it.
+
+While the session lives, each comment is an extmark, so anchors ride
+buffer edits (fixing nits during review is a feature). Every create, edit,
+and delete rewrites the whole file from the extmarks' current positions —
+always a complete snapshot, never an append. Alongside each line number
+the file records the anchored line's text (`quoted`): numbers rot as soon
+as fixes land, and the quoted text is how orca's fix agent finds the spot
+after drift.
+
+The round trip: orca's addressing step converts each `open` comment into a
+finding (severity High — if you bothered to write it, it matters), runs
+the fix machinery, and writes `status` — `addressed`, or `answered` for
+questions — plus a `resolution` note back into the same file, archiving a
+copy with the run's artifacts. The next |:OrcaReview| renders resolutions
+inline under their anchors. One file per branch is safe because the
+workflow is sequential: orca runs, you comment, orca addresses, you
+re-review — one writer at a time.
+
+The file carries a `version` field (currently 1): plugin and skill ship
+separately, and either side fails loud on a version it doesn't know —
+orca.nvim then disables commenting rather than clobber a newer file. If
+the file's recorded head is not an ancestor of the branch under review (a
+recycled branch name), the load warns; delete the file to start fresh.
+
+Highlights, all with sensible defaults you can override:
+`OrcaCommentSign` (the `┃` sign column marker), `OrcaCommentText` (the
+comment's virtual lines), `OrcaCommentResolution` (orca's write-back).
 
 ==============================================================================
 KEYMAPS                                                          *orca-keymaps*
@@ -93,16 +162,19 @@ again.
 
 |]c| and |[c| hunk motions are native diff mode — nothing to define.
 
-Mark and close ship unbound: no native key means what they do, and
-<leader> is yours. They stay available as |:OrcaReviewMark| /
+Comment and close ship unbound: no native key means what they do, and
+<leader> is yours. They stay available as |:OrcaComment| /
 |:OrcaReviewClose|; one line binds them if you want keys: >
 
-        vim.g.orca_mappings = { mark = '<leader>rm', close = '<leader>rq' }
+        vim.g.orca_mappings = { comment = '<leader>rc', close = '<leader>rq' }
 <
+A `comment` binding maps normal mode (cursor line) and visual mode (the
+selected range).
+
                                                           *vim.g.orca_mappings*
 `vim.g.orca_mappings` reshapes the maps, read when a session starts (order
 relative to plugin load never matters). A table overrides per action — keys
-`next`, `prev`, `mark`, `close`, `open` — with `false` dropping that one
+`next`, `prev`, `comment`, `close`, `open` — with `false` dropping that one
 map; the whole variable set to `false` drops them all: >
 
         vim.g.orca_mappings = { next = ']f', prev = '[f' }   -- the old keys
@@ -115,7 +187,7 @@ setup({opts}) is optional sugar over the same variable — `setup({mappings =
 
         {
           "miguelbacalhau/orca.nvim",
-          opts = { mappings = { mark = "<leader>v" } },
+          opts = { mappings = { comment = "<leader>v" } },
         }
 <
 Nothing requires calling it; the plugin stays lazy either way.
@@ -148,7 +220,7 @@ If you use orca (the Claude Code plugin), `/orca:doctor` checks the
 install and prescribes whichever path fits.
 
 `:checkhealth orca` verifies the setup: git ≥ 2.5 on PATH, inside a git
-repository, trunk resolvable.
+repository, `.orca/` at the repo root, trunk resolvable.
 
 ==============================================================================
 vim:tw=78:ts=8:noet:ft=help:norl:

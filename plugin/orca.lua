@@ -21,6 +21,10 @@ vim.api.nvim_create_user_command('OrcaReviewPrev', function()
   orca().prev()
 end, { desc = 'Open the previous changed file as a diff pair' })
 
-vim.api.nvim_create_user_command('OrcaReviewMark', function()
-  orca().mark()
-end, { desc = 'Toggle reviewed (✓) on the current file, then advance' })
+vim.api.nvim_create_user_command('OrcaComment', function(opts)
+  orca().comment(opts.line1, opts.line2)
+end, { range = true, desc = 'Create or edit the review comment on this line (visual mode: on the range)' })
+
+vim.api.nvim_create_user_command('OrcaCommentDelete', function()
+  orca().comment_delete()
+end, { desc = 'Delete the review comment under the cursor' })
