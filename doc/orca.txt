@@ -120,6 +120,13 @@ the file records the anchored line's text (`quoted`): numbers rot as soon
 as fixes land, and the quoted text is how orca's fix agent finds the spot
 after drift.
 
+Comment text renders as virtual lines under the anchor, soft-wrapped to
+the window's text width. Wrapping is display-only — recomputed at every
+placement and on window resize, with the stored text never touched — and
+your own line breaks are kept as paragraph breaks. A range comment shows
+the `┃` gutter marker on every line it covers (Neovim 0.10+; older
+versions mark the anchor line only).
+
 The round trip: orca's addressing step converts each `open` comment into a
 finding (severity High — if you bothered to write it, it matters), runs
 the fix machinery, and writes `status` — `addressed`, or `answered` for

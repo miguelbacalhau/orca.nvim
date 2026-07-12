@@ -36,18 +36,69 @@ local function notes_key(head, range)
   return ((git.branch_of(head) or range):gsub('[^%w._-]', '-'))
 end
 
--- Virtual lines rendered under the anchor: the comment text, then orca's
--- resolution once the addressing step has written one back.
-local function virt(c)
-  local lines = {}
-  for _, l in ipairs(vim.split(c.text, '\n', { plain = true })) do
-    lines[#lines + 1] = { { '┃ ' .. l, 'OrcaCommentText' } }
+-- The longest prefix of `word` that fits `width` display cells — at least
+-- one character, so hard-breaking always makes progress — plus the rest.
+local function split_word(word, width)
+  local fit = 1
+  for i = 2, vim.fn.strchars(word) do
+    if vim.fn.strdisplaywidth(vim.fn.strcharpart(word, 0, i)) > width then break end
+    fit = i
   end
-  if c.status ~= 'open' then
-    local res = ('✔ %s%s'):format(c.status, c.resolution and (' — ' .. c.resolution) or '')
-    for _, l in ipairs(vim.split(res, '\n', { plain = true })) do
-      lines[#lines + 1] = { { '┃ ' .. l, 'OrcaCommentResolution' } }
+  return vim.fn.strcharpart(word, 0, fit), vim.fn.strcharpart(word, fit)
+end
+
+-- Soft-wrap one stored line for display: greedy word wrap on display width
+-- (multi-byte safe); a single word longer than the width hard-breaks so
+-- URLs don't vanish past the window edge. Lines that fit pass verbatim.
+local function wrap(line, width)
+  if vim.fn.strdisplaywidth(line) <= width then return { line } end
+  local chunks, cur = {}, ''
+  for word in line:gmatch('%S+') do
+    local joined = cur == '' and word or cur .. ' ' .. word
+    if vim.fn.strdisplaywidth(joined) <= width then
+      cur = joined
+    else
+      if cur ~= '' then chunks[#chunks + 1] = cur end
+      while vim.fn.strdisplaywidth(word) > width do
+        chunks[#chunks + 1], word = split_word(word, width)
+      end
+      cur = word
     end
+  end
+  if cur ~= '' then chunks[#chunks + 1] = cur end
+  if #chunks == 0 then chunks[1] = '' end
+  return chunks
+end
+
+-- Wrap width for virt_lines placed in `buf`: the showing window's text
+-- area minus the '┃ ' prefix. Neovim never wraps virt_lines itself — each
+-- is one screen line, silently truncated at the edge — so the plugin wraps
+-- at placement time. When no window shows the buffer, assume 78 columns.
+local function wrap_width(buf)
+  local win = vim.fn.win_findbuf(buf)[1]
+  local info = win and vim.fn.getwininfo(win)[1]
+  local text_width = info and (info.width - info.textoff) or 78
+  return math.max(text_width - vim.fn.strdisplaywidth('┃ '), 1)
+end
+
+-- Virtual lines rendered under the anchor: the comment text, then orca's
+-- resolution once the addressing step has written one back. Wrapping is
+-- display-only, recomputed at every placement — stored text is untouched,
+-- and user-authored line breaks stay paragraph breaks (each stored line
+-- wraps independently).
+local function virt(c, width)
+  local lines = {}
+  local function add(text, hl)
+    for _, l in ipairs(vim.split(text, '\n', { plain = true })) do
+      for _, chunk in ipairs(wrap(l, width)) do
+        lines[#lines + 1] = { { '┃ ' .. chunk, hl } }
+      end
+    end
+  end
+  add(c.text, 'OrcaCommentText')
+  if c.status ~= 'open' then
+    add(('✔ %s%s'):format(c.status, c.resolution and (' — ' .. c.resolution) or ''),
+      'OrcaCommentResolution')
   end
   return lines
 end
@@ -62,16 +113,16 @@ local function live(c)
   return c.buf ~= nil and vim.api.nvim_buf_is_valid(c.buf) and mark_line(c.buf, c.mark) ~= nil
 end
 
--- Pull a comment's stored fields up to its extmarks' current positions,
+-- Pull a comment's stored fields up to its extmark's current position,
 -- re-quoting the anchor line — number and quote must describe the same
--- line whenever the file is written.
+-- line whenever the file is written. A range comment is one ranged
+-- extmark, so its end rides edits too and reads back from details.
 local function sync(c)
   if not live(c) then return end
-  c.line = mark_line(c.buf, c.mark)
-  if c.end_mark then
-    local e = mark_line(c.buf, c.end_mark)
-    if e then c.end_line = math.max(e, c.line) end
-  end
+  local pos = vim.api.nvim_buf_get_extmark_by_id(c.buf, NS, c.mark, { details = true })
+  c.line = pos[1] + 1
+  local end_row = pos[3] and pos[3].end_row
+  if end_row then c.end_line = math.max(end_row + 1, c.line) end
   local l = vim.api.nvim_buf_get_lines(c.buf, c.line - 1, c.line, false)[1]
   if l then c.quoted = l end
 end
@@ -79,24 +130,25 @@ end
 local function place(c, buf)
   local last = vim.api.nvim_buf_line_count(buf)
   c.buf = buf
-  c.mark = vim.api.nvim_buf_set_extmark(buf, NS, math.min(c.line, last) - 1, 0, {
+  local opts = {
     id = c.mark,
     sign_text = '┃',
     sign_hl_group = 'OrcaCommentSign',
-    virt_lines = virt(c),
-  })
+    virt_lines = virt(c, wrap_width(buf)),
+  }
   if c.end_line and c.end_line > c.line then
-    c.end_mark = vim.api.nvim_buf_set_extmark(buf, NS, math.min(c.end_line, last) - 1, 0,
-      { id = c.end_mark })
+    -- Ranged: the sign renders on every spanned line (0.10+ decoration
+    -- behavior; on 0.9 it degrades to the anchor line only).
+    opts.end_row = math.min(c.end_line, last) - 1
   end
+  c.mark = vim.api.nvim_buf_set_extmark(buf, NS, math.min(c.line, last) - 1, 0, opts)
 end
 
 local function unplace(c)
-  if c.buf and vim.api.nvim_buf_is_valid(c.buf) then
-    if c.mark then pcall(vim.api.nvim_buf_del_extmark, c.buf, NS, c.mark) end
-    if c.end_mark then pcall(vim.api.nvim_buf_del_extmark, c.buf, NS, c.end_mark) end
+  if c.buf and vim.api.nvim_buf_is_valid(c.buf) and c.mark then
+    pcall(vim.api.nvim_buf_del_extmark, c.buf, NS, c.mark)
   end
-  c.buf, c.mark, c.end_mark = nil, nil, nil
+  c.buf, c.mark = nil, nil
 end
 
 -- The comment whose anchored range covers `line` of `path`, plus its index.
@@ -105,6 +157,23 @@ local function covering(path, line)
     if c.file == path then
       sync(c)
       if line >= c.line and line <= (c.end_line or c.line) then return c, i end
+    end
+  end
+end
+
+-- Re-place the comments of every buffer shown in `wins` — wrap width
+-- follows the window. sync() first, then place() at the synced line with
+-- the same extmark id: drifted anchors stay drifted.
+function M.refit(wins)
+  if not state then return end
+  local bufs = {}
+  for _, win in ipairs(wins) do
+    if vim.api.nvim_win_is_valid(win) then bufs[vim.api.nvim_win_get_buf(win)] = true end
+  end
+  for _, c in ipairs(state.comments) do
+    if c.buf and bufs[c.buf] and live(c) then
+      sync(c)
+      place(c, c.buf)
     end
   end
 end
@@ -122,7 +191,33 @@ function M.start(opts)
     head = opts.head,
     range = opts.range,
     comments = {},
+    resized = {},
   }
+  -- Virtual lines wrap to the window width at placement time, so a resize
+  -- must re-place. One scheduled refit coalesces the WinResized burst a
+  -- mouse drag produces; the augroup is notes-owned because notes
+  -- lifecycle equals session lifecycle.
+  vim.api.nvim_create_autocmd('WinResized', {
+    group = vim.api.nvim_create_augroup('orca-notes', { clear = true }),
+    callback = function()
+      local s = state
+      if not s then return end
+      local scheduled = next(s.resized) ~= nil
+      -- v:event.windows is absent when fired via nvim_exec_autocmds (the
+      -- headless smoke test's route — a UI-less run never sees the real
+      -- event); refit every window in the tab then.
+      for _, w in ipairs(vim.v.event.windows or vim.api.nvim_tabpage_list_wins(0)) do
+        s.resized[w] = true
+      end
+      if scheduled then return end
+      vim.schedule(function()
+        if state ~= s then return end
+        local wins = vim.tbl_keys(s.resized)
+        s.resized = {}
+        M.refit(wins)
+      end)
+    end,
+  })
   if vim.fn.filereadable(state.path) == 0 then return 0 end
   local ok, data = pcall(vim.json.decode,
     table.concat(vim.fn.readfile(state.path), '\n'),
@@ -319,6 +414,7 @@ function M.stop()
   if state.input and vim.api.nvim_win_is_valid(state.input) then
     pcall(vim.api.nvim_win_close, state.input, true)
   end
+  pcall(vim.api.nvim_del_augroup_by_name, 'orca-notes')
   state = nil
 end
 
