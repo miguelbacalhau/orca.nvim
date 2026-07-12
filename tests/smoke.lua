@@ -127,6 +127,7 @@ check(c1 and c1.file == 'src/b.lua' and c1.line == 2, 'comment anchored at src/b
 check(c1 and c1.text == 'first thought\nsecond line', 'multi-line text preserved')
 check(c1 and c1.quoted == 'line2 CHANGED', 'quoted holds the anchor line text')
 check(c1 and c1.status == 'open', 'new comment is open')
+check(c1 and c1.id == 1, 'first comment carries id 1')
 check(#vim.api.nvim_buf_get_extmarks(0, NS, 0, -1, {}) == 1, 'comment shown as an extmark in the buffer')
 
 -- Edit: :OrcaComment on the commented line prefills; writing rewrites the
@@ -141,6 +142,7 @@ drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, 
 data = read_notes()
 check(data and #data.comments == 1 and data.comments[1].text == 'edited thought',
   'editing rewrites the comment, no duplicate')
+check(data and data.comments[1].id == 1, 'editing keeps the id')
 
 -- The left scratch side politely refuses — comments are right-side only.
 vim.cmd('wincmd h')
@@ -173,6 +175,7 @@ check(data and #data.comments == 2, 'second comment lands next to the first')
 local ranged
 for _, c in ipairs(data and data.comments or {}) do if c.line == 3 then ranged = c end end
 check(ranged ~= nil and ranged.end_line == 4, 'range comment records end_line')
+check(ranged ~= nil and ranged.id == 2, 'ids increment globally — range comment is #2')
 
 -- Delete: :OrcaCommentDelete anywhere inside the covered range clears it.
 vim.api.nvim_win_set_cursor(0, { 4, 0 })
@@ -180,6 +183,22 @@ vim.cmd('OrcaCommentDelete')
 data = read_notes()
 check(data and #data.comments == 1 and data.comments[1].line == 2,
   'OrcaCommentDelete removes the covering comment')
+
+-- Ids never recycle: the next comment after a delete takes a fresh id, so
+-- the deleted #2 stays a permanent gap and old #N references can't rebind.
+vim.api.nvim_win_set_cursor(0, { 4, 0 })
+vim.cmd('OrcaComment')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'gap prober' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+data = read_notes()
+local prober
+for _, c in ipairs(data and data.comments or {}) do if c.text == 'gap prober' then prober = c end end
+check(prober ~= nil and prober.id == 3, 'deleted id leaves a gap — next comment is #3, got '
+  .. tostring(prober and prober.id))
+vim.cmd('OrcaCommentDelete')
+data = read_notes()
+check(data and #data.comments == 1, 'gap prober cleaned up')
 
 -- ======================= navigation (unchanged) =======================
 
@@ -314,6 +333,7 @@ check(vim.fn.filereadable(notes_path) == 1, 'notes file survives close — that 
 data = read_notes()
 data.comments[1].status = 'addressed'
 data.comments[1].resolution = 'debounced it'
+data.comments[1].id = nil -- a file from before ids existed: backfilled on load
 vim.fn.writefile({ vim.json.encode(data) }, notes_path)
 orca.review('main...feature')
 qf = vim.fn.getqflist({ title = true })
@@ -326,7 +346,8 @@ for _, vl in ipairs(marks[1] and marks[1][4].virt_lines or {}) do
   for _, chunk in ipairs(vl) do shown[#shown + 1] = chunk[1] end
 end
 shown = table.concat(shown, '\n')
-check(shown:find('edited thought', 1, true) ~= nil, 'virtual lines carry the comment text')
+check(shown:find('#1 edited thought', 1, true) ~= nil,
+  'virtual lines carry the comment text behind its backfilled id')
 check(shown:find('addressed', 1, true) ~= nil and shown:find('debounced it', 1, true) ~= nil,
   'virtual lines carry orca\'s status and resolution')
 orca.close()

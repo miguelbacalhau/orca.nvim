@@ -95,7 +95,7 @@ local function virt(c, width)
       end
     end
   end
-  add(c.text, 'OrcaCommentText')
+  add(('#%d %s'):format(c.id, c.text), 'OrcaCommentText')
   if c.status ~= 'open' then
     add(('✔ %s%s'):format(c.status, c.resolution and (' — ' .. c.resolution) or ''),
       'OrcaCommentResolution')
@@ -200,6 +200,7 @@ function M.start(opts)
     head = opts.head,
     range = opts.range,
     comments = {},
+    next_id = 1,
     resized = {},
   }
   -- Virtual lines wrap to the window width at placement time, so a resize
@@ -250,9 +251,11 @@ function M.start(opts)
       :format(data.range or 'unknown range', state.path), vim.log.levels.WARN)
   end
   state.created = data.created
+  local max_id = 0
   for _, c in ipairs(data.comments or {}) do
     if c.file and c.line and c.text then
       state.comments[#state.comments + 1] = {
+        id = tonumber(c.id),
         file = c.file,
         line = c.line,
         end_line = c.end_line,
@@ -261,8 +264,19 @@ function M.start(opts)
         status = c.status or 'open',
         resolution = c.resolution,
       }
+      max_id = math.max(max_id, tonumber(c.id) or 0)
     end
   end
+  -- Backfill files from before ids existed. Assignment order is arbitrary
+  -- (such files contain no #N references yet), but must not collide with
+  -- ids that do exist.
+  for _, c in ipairs(state.comments) do
+    if not c.id then
+      max_id = max_id + 1
+      c.id = max_id
+    end
+  end
+  state.next_id = max_id + 1
   return #state.comments
 end
 
@@ -292,6 +306,7 @@ function M.save()
   local out = {}
   for _, c in ipairs(state.comments) do
     out[#out + 1] = {
+      id = c.id,
       file = c.file,
       line = c.line,
       end_line = c.end_line,
@@ -487,7 +502,8 @@ function M.comment(path, buf, line, line2)
   end
   local existing, idx = covering(path, line)
   local prefill = existing and vim.split(existing.text, '\n', { plain = true }) or {}
-  local title = ('%s:%d'):format(path, existing and existing.line or line)
+  local title = existing and ('#%d %s:%d'):format(existing.id, path, existing.line)
+    or ('%s:%d'):format(path, line)
   -- The anchor drives the float presentation: where the gap opens, and
   -- which extmark holds it (existing's own, or a temporary one).
   local anchor = {
@@ -510,7 +526,9 @@ function M.comment(path, buf, line, line2)
       return
     end
     local text = table.concat(lines, '\n')
+    local id
     if existing then
+      id = existing.id
       existing.text = text
       existing.status = 'open'
       existing.resolution = nil
@@ -518,7 +536,13 @@ function M.comment(path, buf, line, line2)
       sync(existing)
       place(existing, buf)
     else
+      -- Ids are assigned once and never reused — a deleted comment leaves a
+      -- gap, so a stale #N reference in another comment's text dangles
+      -- visibly instead of rebinding to a newer comment.
+      id = state.next_id
+      state.next_id = state.next_id + 1
       local c = {
+        id = id,
         file = path,
         line = line,
         end_line = (line2 and line2 > line) and line2 or nil,
@@ -530,7 +554,7 @@ function M.comment(path, buf, line, line2)
       place(c, buf)
     end
     M.save()
-    notify('comment saved — ' .. vim.fn.fnamemodify(state.path, ':~'))
+    notify(('comment #%d saved — %s'):format(id, vim.fn.fnamemodify(state.path, ':~')))
   end)
 end
 
@@ -542,7 +566,7 @@ function M.delete(path, line)
   unplace(existing)
   table.remove(state.comments, idx)
   M.save()
-  notify(('comment deleted — %s:%d'):format(path, line))
+  notify(('comment #%d deleted — %s:%d'):format(existing.id, path, line))
 end
 
 -- End the notes layer: final save (anchors as the session last saw them),

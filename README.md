@@ -53,6 +53,12 @@ on the working-tree side of the diff. While the session lives each comment is an
 extmark, so anchors ride buffer edits; every create/edit/delete rewrites the notes
 file from the extmarks' current positions — a crash loses nothing.
 
+Each comment carries a stable global id, shown as `#N` in its virtual text —
+write `#2` in one comment to reference another, even across files, and the
+addressing step resolves it. Ids are assigned once and never reused: deleting a
+comment leaves a gap, so a stale reference dangles visibly instead of silently
+pointing at a newer comment.
+
 Notes persist to `.orca/review-notes/<key>.json`, where `<key>` is the sanitized
 head branch (or the full range when head isn't a branch). The path is derived from
 git state alone, so quitting Neovim on Tuesday and reopening the worktree on
