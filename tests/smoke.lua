@@ -444,8 +444,9 @@ vim.fn.delete(notes_path)
 
 -- vim.g.orca_mappings resolves at session start: per-action override,
 -- per-action disable, untouched actions keep their defaults, and the
--- unbound-by-default comment attaches (n and x) when the user opts in.
-vim.g.orca_mappings = { next = ')f', prev = false, comment = '<leader>v' }
+-- unbound-by-default comment/delete attach when the user opts in
+-- (comment in n and x).
+vim.g.orca_mappings = { next = ')f', prev = false, comment = '<leader>v', delete = '<leader>x' }
 orca.review('')
 check(vim.fn.maparg(')f', 'n', false, true).buffer == 1, 'orca_mappings: next remapped to )f')
 check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'orca_mappings: default ]q gone when remapped')
@@ -459,6 +460,26 @@ keys('\\v')
 check(vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) ~= nil,
   'configured comment key opens the input, got ' .. vim.api.nvim_buf_get_name(0))
 vim.cmd('quit') -- abort: nothing typed, nothing written
+-- the opt-in delete binding removes the comment under the cursor (the
+-- abort drops focus on whichever window quit picks — refocus the
+-- working-tree side first)
+for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+  local b = vim.api.nvim_win_get_buf(w)
+  if vim.bo[b].buftype == '' and vim.api.nvim_buf_get_name(b):find('src/b.lua', 1, true) then
+    vim.api.nvim_set_current_win(w)
+  end
+end
+check(vim.fn.maparg('<leader>x', 'n', false, true).buffer == 1,
+  'orca_mappings: opt-in delete binding attaches')
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+keys('\\v')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'doomed' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+check(vim.fn.filereadable(notes_path) == 1, 'delete setup: comment written to disk')
+keys('\\x')
+check(vim.fn.filereadable(notes_path) == 0,
+  'configured delete key removes the comment (empty file deleted)')
 orca.close()
 
 -- setup() is sugar over the same variable; false drops every map, and the

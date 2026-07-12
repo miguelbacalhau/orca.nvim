@@ -26,16 +26,17 @@ end
 -- vim.g.orca_mappings reshapes them: a table overrides per action (false
 -- drops one), false wholesale drops them all. Resolved once per session.
 -- Every default is a native key upgraded in place — orca never binds a key
--- that doesn't already mean what orca makes it do. comment/close ship
--- unbound (no native key means what they do); the commands and config keys
--- remain.
+-- that doesn't already mean what orca makes it do. comment/delete/close
+-- ship unbound (no native key means what they do); the commands and config
+-- keys remain.
 local DEFAULT_MAPPINGS = {
   next = ']q',
   prev = '[q',
   open = '<CR>', -- quickfix window only
 }
 
-local VALID_ACTIONS = { next = true, prev = true, comment = true, close = true, open = true }
+local VALID_ACTIONS =
+  { next = true, prev = true, comment = true, delete = true, close = true, open = true }
 
 -- List-identity guard: another list can land in the qf window mid-session
 -- (:grep, LSP references — usually accidental), and orca's keys must not
@@ -67,6 +68,7 @@ local ACTIONS = {
   end, 'orca: previous file' },
   { 'comment', function() M.comment(vim.fn.line('.'), vim.fn.line('.')) end,
     'orca: comment on this line', ':OrcaComment<CR>' },
+  { 'delete', function() M.comment_delete() end, 'orca: delete the comment on this line' },
   { 'close', function() M.close() end, 'orca: close review' },
 }
 
@@ -77,7 +79,7 @@ local function resolve_mappings()
   if type(user) == 'table' then
     for action, lhs in pairs(user) do
       if not VALID_ACTIONS[action] then
-        notify(('vim.g.orca_mappings: unknown action %q (valid: next, prev, comment, close, open)')
+        notify(('vim.g.orca_mappings: unknown action %q (valid: next, prev, comment, delete, close, open)')
           :format(action), vim.log.levels.WARN)
       elseif lhs == false then
         maps[action] = nil

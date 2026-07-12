@@ -73,16 +73,17 @@ Buffer-local maps in session-owned buffers, every one a native key upgraded in p
 `]q` / `[q` next/previous file (counts work — `3]q` moves three), and `<CR>` in the
 quickfix window opens that file's pair. If another list lands in the quickfix window
 mid-session (`:grep`, LSP references), the keys fall back to stock behavior until
-orca's list is current again. Comment and close ship unbound — the commands are the
-API, and one line adds keys:
+orca's list is current again. Comment, delete and close ship unbound — the commands
+are the API, and one line adds keys:
 
 ```lua
 vim.g.orca_mappings = { comment = "<leader>rc", close = "<leader>rq" }
 ```
 
 `vim.g.orca_mappings` is read when a session starts: a table overrides per action
-(keys `next`, `prev`, `comment`, `close`, `open`; `false` drops one map), or `false`
-wholesale for commands only. A `comment` binding maps both normal and visual mode.
+(keys `next`, `prev`, `comment`, `delete`, `close`, `open`; `false` drops one map),
+or `false` wholesale for commands only. A `comment` binding maps both normal and
+visual mode; `delete` removes the comment on the cursor line.
 `require('orca').setup{ mappings = ... }` is optional sugar over the same variable,
 so lazy.nvim's `opts` works too.
 
