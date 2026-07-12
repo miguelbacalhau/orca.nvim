@@ -442,6 +442,134 @@ vim.bo[rbuf].modified = false
 orca.close()
 vim.fn.delete(notes_path)
 
+-- ==================== float comment edit (v2.2) ====================
+
+-- Editing happens in a borderless float over spacer virt_lines: the gap
+-- under the anchor stays open (spacers keep the ┃ prefix), float and gap
+-- grow with the text, and closing the float restores the real virt_lines
+-- whichever way it dies.
+orca.review('')
+orca.open(idx_of('src/b.lua'))
+local fsrc_win = vim.api.nvim_get_current_win()
+local fsrc_buf = vim.api.nvim_get_current_buf()
+local function first_mark()
+  return vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, { details = true })[1]
+end
+
+-- New comment: the input is a float, and a temporary extmark holds the
+-- sign + gap while it is open.
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+vim.cmd('OrcaComment')
+local fwin = vim.api.nvim_get_current_win()
+local fbuf = vim.api.nvim_get_current_buf()
+check(vim.api.nvim_win_get_config(fwin).relative == 'editor',
+  'comment input opens as an editor-relative float')
+check(first_mark() ~= nil, 'temp extmark holds the gap for a new comment')
+vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, { 'float seed' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+check(not vim.api.nvim_win_is_valid(fwin), 'float closes on :w')
+check(#vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, {}) == 1,
+  'temp mark deleted, real mark placed')
+data = read_notes()
+check(data and data.comments[1].text == 'float seed', 'float :w commits to JSON')
+
+-- Edit: the existing mark swaps its virt_lines for prefix-only spacers,
+-- count = the float's text height.
+vim.api.nvim_set_current_win(fsrc_win)
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+vim.cmd('OrcaComment')
+fwin = vim.api.nvim_get_current_win()
+fbuf = vim.api.nvim_get_current_buf()
+check(table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), '\n') == 'float seed',
+  'edit float prefills the existing text')
+local spacer_ok = true
+for _, vl in ipairs(first_mark()[4].virt_lines or {}) do
+  if vl[1][1] ~= '┃ ' then spacer_ok = false end
+end
+check(spacer_ok, 'edit-time virt_lines are prefix-only spacers')
+check(#first_mark()[4].virt_lines == vim.api.nvim_win_get_height(fwin),
+  'spacer count equals the float height')
+
+-- Growth: more text -> taller float and more spacers, in lockstep.
+vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, { 'grown alpha', 'beta', 'gamma', 'delta' })
+vim.api.nvim_exec_autocmds('TextChanged', { buffer = fbuf })
+check(vim.api.nvim_win_get_height(fwin) == 4,
+  'float grows to the text height, got ' .. vim.api.nvim_win_get_height(fwin))
+check(#first_mark()[4].virt_lines == 4,
+  'spacer count grows in lockstep, got ' .. #first_mark()[4].virt_lines)
+
+-- :w commits: real virt_lines back with the new text.
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+local restored = {}
+for _, vl in ipairs(first_mark()[4].virt_lines or {}) do restored[#restored + 1] = vl[1][1] end
+check(table.concat(restored, '\n'):find('gamma', 1, true) ~= nil,
+  'commit restores real virt_lines with the edited text')
+data = read_notes()
+check(data and data.comments[1].text == 'grown alpha\nbeta\ngamma\ndelta', 'edited text saved to JSON')
+
+-- :q aborts an edit: original virt_lines back, stored text untouched.
+vim.api.nvim_set_current_win(fsrc_win)
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+vim.cmd('OrcaComment')
+fbuf = vim.api.nvim_get_current_buf()
+vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, { 'discarded' })
+vim.bo[fbuf].modified = false
+vim.cmd('quit')
+restored = {}
+for _, vl in ipairs(first_mark()[4].virt_lines or {}) do restored[#restored + 1] = vl[1][1] end
+check(table.concat(restored, '\n'):find('gamma', 1, true) ~= nil,
+  ':q abort restores the original virt_lines')
+data = read_notes()
+check(data and data.comments[1].text == 'grown alpha\nbeta\ngamma\ndelta',
+  'abort leaves stored text untouched')
+
+-- :q on a *new* comment: temp mark gone, nothing recorded.
+vim.api.nvim_set_current_win(fsrc_win)
+vim.api.nvim_win_set_cursor(0, { 3, 0 })
+vim.cmd('OrcaComment')
+check(#vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, {}) == 2,
+  'new comment holds a temp mark while open')
+vim.cmd('quit')
+check(#vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, {}) == 1,
+  ':q on a new comment deletes the temp mark')
+data = read_notes()
+check(data and #data.comments == 1, 'aborted new comment never reaches the file')
+
+-- Session close with a float open: float gone, no dangling autocmds.
+vim.api.nvim_set_current_win(fsrc_win)
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+vim.cmd('OrcaComment')
+fwin = vim.api.nvim_get_current_win()
+orca.close()
+check(not vim.api.nvim_win_is_valid(fwin), 'session close takes the open float with it')
+check(#vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, {}) == 0,
+  'no extmarks survive close with a float open')
+-- (builtin matchparen owns a '*' WinScrolled; the float's autocmds are the
+-- window-id-patterned ones)
+local dangling = 0
+for _, a in ipairs(vim.api.nvim_get_autocmds({ event = { 'WinScrolled', 'WinClosed' } })) do
+  if tostring(a.pattern):match('^%d+$') then dangling = dangling + 1 end
+end
+check(dangling == 0, 'no dangling float autocmds after close, got ' .. dangling)
+
+-- Forced split path (the 0.9 fallback) still runs the same contract.
+require('orca.notes').float_input = false
+orca.review('')
+orca.open(idx_of('src/b.lua'))
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+vim.cmd('OrcaComment')
+check(vim.api.nvim_win_get_config(0).relative == '', 'forced fallback opens a split, not a float')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'split text' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+data = read_notes()
+check(data and data.comments[1].text == 'split text', 'split fallback still commits')
+orca.close()
+require('orca.notes').float_input = true
+vim.fn.delete(notes_path)
+
 -- vim.g.orca_mappings resolves at session start: per-action override,
 -- per-action disable, untouched actions keep their defaults, and the
 -- unbound-by-default comment/delete attach when the user opts in

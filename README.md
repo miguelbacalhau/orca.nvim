@@ -38,7 +38,7 @@ checks the install and prescribes whichever path fits.
 |---|---|
 | `:OrcaReview [range]` | Start a session: `<base>...<head>` in the merge-base sense; bare `<base>` implies `...HEAD`; no argument defaults to `<trunk>...HEAD`. Populates the quickfix list, loads any existing review notes for the branch, and opens the first file's diff pair. |
 | `:OrcaReviewNext` / `:OrcaReviewPrev` | Move to the next/previous changed file. |
-| `:OrcaComment` | Create or edit the comment on the current line (visual mode: on the range). Opens a small scratch split — `:w` commits, quitting without writing aborts, committing empty text deletes. |
+| `:OrcaComment` | Create or edit the comment on the current line (visual mode: on the range). Opens a borderless float in place over the comment's virtual lines (a bottom split on Neovim 0.9) — `:w` commits, quitting without writing aborts, committing empty text deletes. |
 | `:OrcaCommentDelete` | Delete the comment under the cursor. |
 | `:OrcaReviewClose` | End the session and clean up. The quickfix list stays — it's yours. |
 

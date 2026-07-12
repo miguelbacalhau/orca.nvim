@@ -78,11 +78,15 @@ COMMANDS                                                        *orca-commands*
         (which re-opens it: changed text means any previous resolution no
         longer answers it).
 
-        Input happens in a small scratch split at the bottom — review
-        comments are multi-line. `:w` (or `:wq`) commits; quitting
-        without writing aborts; committing empty text deletes the
-        comment. Each committed comment is written to the notes file
-        immediately (|orca-notes|) — a crash loses nothing.
+        Input happens in a borderless float placed exactly where the
+        comment's virtual lines render, so editing looks like typing
+        into the virtual text itself: the gap under the anchor stays
+        open and grows with the text. Review comments are multi-line.
+        `:w` (or `:wq`) commits; quitting without writing aborts;
+        committing empty text deletes the comment. Each committed
+        comment is written to the notes file immediately (|orca-notes|)
+        — a crash loses nothing. (On Neovim 0.9 the input is a small
+        scratch split at the bottom instead; same contract.)
 
         Comments anchor to the working-tree (right) side of the pair
         only. The left buffer is a base-version scratch; a comment there
