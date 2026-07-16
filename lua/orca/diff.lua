@@ -96,6 +96,17 @@ function M.close(pair)
     and vim.tbl_contains(pair.scratch, vim.api.nvim_win_get_buf(pair.left_win)) then
     pcall(vim.api.nvim_win_close, pair.left_win, true)
   end
+  -- A deleted file's "right side" is a scratch too, and wiping a displayed
+  -- buffer closes its window — but the right window must survive as the
+  -- next pair's anchor (with only the panel left, the layout collapses and
+  -- the panel balloons to fill the screen). Park a throwaway buffer in it
+  -- first; the next :edit into the window wipes the placeholder.
+  if pair.right_win and vim.api.nvim_win_is_valid(pair.right_win)
+    and vim.tbl_contains(pair.scratch, vim.api.nvim_win_get_buf(pair.right_win)) then
+    local placeholder = vim.api.nvim_create_buf(false, true)
+    vim.bo[placeholder].bufhidden = 'wipe'
+    vim.api.nvim_win_set_buf(pair.right_win, placeholder)
+  end
   for _, buf in ipairs(pair.scratch) do
     if vim.api.nvim_buf_is_valid(buf) then
       pcall(vim.api.nvim_buf_delete, buf, { force = true })

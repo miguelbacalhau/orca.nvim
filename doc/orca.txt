@@ -29,13 +29,13 @@ COMMANDS                                                        *orca-commands*
         local twin), else the first of `main`/`master`/`trunk` that
         exists locally.
 
-        The changed files populate the |quickfix| list (`M`/`A`/`D`/`R`
-        status in each entry) and the first file's diff pair opens
-        immediately. <CR> on a quickfix entry opens that file's pair:
-        the working-tree file on the right — a real buffer, LSP attaches,
-        editable — and the merge-base version on the left in a read-only
-        scratch buffer. Native diff mode drives both, so |]c|, |[c|, |do|
-        and |dp| work as everywhere else.
+        The changed files populate the review panel (|orca-panel| — a
+        bottom strip, one line per file with its `M`/`A`/`D`/`R` status)
+        and the first file's diff pair opens immediately. <CR> on a panel
+        line opens that file's pair: the working-tree file on the right —
+        a real buffer, LSP attaches, editable — and the merge-base version
+        on the left in a read-only scratch buffer. Native diff mode drives
+        both, so |]c|, |[c|, |do| and |dp| work as everywhere else.
 
         Any existing review notes for the branch load with the session
         (|orca-notes|): comments from an earlier sitting reappear at
@@ -50,25 +50,31 @@ COMMANDS                                                        *orca-commands*
 
         The pair follows navigation. Entering a changed file by any route
         — a fuzzy finder, |gd|, plain |:edit| — opens its diff pair around
-        the window you landed in, quickfix selection synced. Wandering off
+        the window you landed in, panel selection synced. Wandering off
         to a buffer outside the review collapses the pair (left split
-        closed, diff mode off); the session stays alive, and the quickfix
-        window, |:OrcaReviewNext|, or entering any changed file resumes
-        the walk.
+        closed, diff mode off); the session stays alive, and the panel,
+        |:OrcaReviewNext|, or entering any changed file resumes the walk.
 
                                                              *:OrcaReviewClose*
 :OrcaReviewClose
-        End the session: review notes saved, diff mode off, scratch
-        buffers wiped, keymaps removed. The quickfix list is left in
-        place — it is yours. Quitting Neovim cleans up the same way
-        (scratch buffers are |nofile| + `bufhidden=wipe`; the only thing
-        that persists is the notes file, and persisting is its job).
+        End the session: review notes saved, diff mode off, the panel
+        destroyed, scratch buffers wiped, keymaps removed. Quitting Neovim
+        cleans up the same way (the only thing that persists is the notes
+        file, and persisting is its job).
 
                                             *:OrcaReviewNext* *:OrcaReviewPrev*
 :OrcaReviewNext
 :OrcaReviewPrev
         Move to the next/previous changed file, tearing down the current
         pair and opening the new one.
+
+                                                             *:OrcaReviewPanel*
+:OrcaReviewPanel
+        The panel's focus-or-toggle ladder: hidden → open and focus it;
+        visible but unfocused → focus it; already focused → close its
+        window. Closing only hides the view — the session, and the panel's
+        content, live until |:OrcaReviewClose|. Also available as the
+        `panel` action in |vim.g.orca_mappings| (unbound by default).
 
                                                                  *:OrcaComment*
 :[range]OrcaComment
@@ -97,6 +103,50 @@ COMMANDS                                                        *orca-commands*
 :OrcaCommentDelete
         Delete the comment covering the cursor line. (Committing empty
         text from |:OrcaComment| does the same.)
+
+                                          *:OrcaCommentNext* *:OrcaCommentPrev*
+:OrcaCommentNext
+:OrcaCommentPrev
+        Jump to the next/previous review comment, review-wide: file order
+        (the panel's), then line, crossing into another file through its
+        diff pair. Comments are orca's own extmarks — no native motion can
+        find them — and positions are extmark-resolved at jump time, so
+        they self-heal after edits. Clamps at the first/last comment with
+        a message. Also available as `comment_next`/`comment_prev` in
+        |vim.g.orca_mappings| (unbound by default).
+
+==============================================================================
+THE PANEL                                                          *orca-panel*
+
+The changed-file list lives in a buffer orca owns (`orca://review`,
+filetype `orca-panel`), shown in a full-width strip at the bottom — the
+quickfix window's old footprint, diff pairs keep full width. It is not a
+quickfix list on purpose: quickfix is shared territory, and the verbs of
+reviewing — |:grep| for a symbol's other uses, LSP references, test
+runners — all push new lists, each one evicting the review from the
+display. Nothing external writes into an orca-owned buffer, so the panel
+survives everything short of |:OrcaReviewClose|; a foreign quickfix list
+mid-session changes nothing.
+
+One line per file: highlighted status letter, comment count, path
+(renames as `old → new`), a `(binary)` marker where it applies. The
+current file carries a full-line highlight and the panel's parked cursor,
+so entering the panel always lands on it. Files with review comments show
+a `*n` count between the status letter and the name — its column is
+reserved on comment-less rows so names stay aligned — updating live as
+comments are created, deleted, or loaded from an earlier sitting.
+
+<CR> on a line opens that file's diff pair and focuses it. Closing the
+panel window (|:q|, |CTRL-W_c|, a window-management plugin) hides the
+view; |:OrcaReviewPanel| brings it back, re-rendered from session state.
+The session's range shows in the panel window's 'statusline'.
+
+Highlights, all with sensible defaults you can override:
+`OrcaPanelAdded`, `OrcaPanelRemoved`, `OrcaPanelChanged`,
+`OrcaPanelRenamed` (the status letters — linked to the builtin |hl-Added|
+/ |hl-Removed| / |hl-Changed| groups), `OrcaPanelCurrent` (the current
+file's line, linked to |hl-CursorLine|), `OrcaPanelCount` (the `*n`
+comment counts, purple by default).
 
 ==============================================================================
 REVIEW NOTES                                                       *orca-notes*
@@ -154,43 +204,42 @@ comment's virtual lines), `OrcaCommentResolution` (orca's write-back).
 KEYMAPS                                                          *orca-keymaps*
 
 Buffer-local only, set in the buffers the session owns (both diff sides and
-the quickfix window) and removed when the session lets go of them. The
-commands above are the public API; map your own globals if you want them.
+the panel) and removed when the session lets go of them. The commands above
+are the public API; map your own globals if you want them.
 
-Every default is a native key upgraded in place — orca never binds a key
-that doesn't already mean what orca makes it do:
+One default ships bound:
 
-        ]q              :OrcaReviewNext — |]q|'s own meaning, direct route.
-                        Takes a count: `3]q` moves three files, clamped at
-                        the list edge.
-        [q              :OrcaReviewPrev, same contract.
-        <CR>            (quickfix window only) open this file's diff pair
+        <CR>            (panel only) open this file's diff pair
 
-If another list lands in the quickfix window mid-session (|:grep|, LSP
-references), the keys fall back to stock behavior — <CR> jumps to the
-entry, ]q/[q run |:cnext|/|:cprevious| — until orca's list is current
-again.
+In an orca-owned buffer <CR> shadows nothing — the fugitive/oil precedent.
+Everything else ships unbound: orca never binds a key that doesn't already
+mean what orca makes it do, and no native key means "next reviewed file"
+or "comment this line" (`]q`/`[q` keep meaning the user's real
+quickfix-next inside session buffers). Restoring the old quickfix feel is
+one line — counts work, `3]q` moves three files, clamped at the edge: >
 
+        vim.g.orca_mappings = { next = ']q', prev = '[q' }
+<
 |]c| and |[c| hunk motions are native diff mode — nothing to define.
 
-Comment, delete and close ship unbound: no native key means what they do,
-and <leader> is yours. They stay available as |:OrcaComment| /
-|:OrcaCommentDelete| / |:OrcaReviewClose|; one line binds them if you want
-keys: >
+The rest stays available as commands; bind what you use: >
 
         vim.g.orca_mappings = { comment = '<leader>rc', close = '<leader>rq' }
 <
 A `comment` binding maps normal mode (cursor line) and visual mode (the
 selected range). A `delete` binding deletes the comment on the cursor line,
-same as |:OrcaCommentDelete|.
+same as |:OrcaCommentDelete|. A `panel` binding rides the
+|:OrcaReviewPanel| ladder; `comment_next`/`comment_prev` are
+|:OrcaCommentNext|/|:OrcaCommentPrev|.
 
                                                           *vim.g.orca_mappings*
 `vim.g.orca_mappings` reshapes the maps, read when a session starts (order
 relative to plugin load never matters). A table overrides per action — keys
-`next`, `prev`, `comment`, `delete`, `close`, `open` — with `false` dropping
-that one map; the whole variable set to `false` drops them all: >
+`next`, `prev`, `open`, `comment`, `delete`, `comment_next`,
+`comment_prev`, `panel`, `close` — with `false` dropping that one map; the
+whole variable set to `false` drops them all: >
 
-        vim.g.orca_mappings = { next = ']f', prev = '[f' }   -- the old keys
+        vim.g.orca_mappings = { next = ']q', prev = '[q' }   -- the old keys
         vim.g.orca_mappings = false                          -- commands only
 <
                                                                   *orca.setup()*

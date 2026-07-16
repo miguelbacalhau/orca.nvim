@@ -13,13 +13,12 @@ local function drain(cond)
   vim.wait(1000, cond, 10)
 end
 
--- A competing FileType-qf autocmd registered BEFORE the session starts,
--- mapping <CR> back to itself — exactly what qf ftplugins and plugins like
--- mini.jump2d's <CR> revert do on every copen. The session's own re-assert
--- autocmd registers later, so it must win every same-event race; the
--- keystroke checks further down are the regression test for that.
+-- A competing FileType autocmd mapping <CR> back to itself in the panel's
+-- filetype — the blanket-ftplugin pattern that used to clobber the qf map.
+-- Panel maps are set after the buffer (and its filetype) exist, and nothing
+-- ever re-runs ftplugins on an orca-owned buffer, so orca's <CR> must win.
 vim.api.nvim_create_autocmd('FileType', {
-  pattern = 'qf',
+  pattern = 'orca-panel',
   callback = function(ev)
     vim.keymap.set('n', '<CR>', '<CR>', { buffer = ev.buf, nowait = true })
   end,
@@ -27,30 +26,85 @@ vim.api.nvim_create_autocmd('FileType', {
 
 local orca = require('orca')
 local NS = vim.api.nvim_create_namespace('orca_notes')
+local PNS = vim.api.nvim_create_namespace('orca_panel')
+
+-- Panel introspection: one owned buffer (orca://review), one window at most.
+local function panel_buf()
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(b) and vim.api.nvim_buf_get_name(b) == 'orca://review' then
+      return b
+    end
+  end
+end
+local function panel_win()
+  local b = panel_buf()
+  if not b then return nil end
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_get_buf(w) == b then return w end
+  end
+end
+local function panel_lines()
+  return vim.api.nvim_buf_get_lines(panel_buf(), 0, -1, false)
+end
+-- 1-based row of the entry whose panel line matches pat (a lua pattern) —
+-- rows follow entry order, the old quickfix idx.
+local function idx_of(pat)
+  for i, l in ipairs(panel_lines()) do
+    if l:find(pat) then return i end
+  end
+end
+-- The row carrying the full-line current-file mark.
+local function panel_cur()
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(panel_buf(), PNS, 0, -1, { details = true })) do
+    if m[4].line_hl_group == 'OrcaPanelCurrent' then return m[2] + 1 end
+  end
+end
+local function status_hl(row)
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(panel_buf(), PNS,
+    { row - 1, 0 }, { row - 1, -1 }, { details = true })) do
+    -- the status letter's mark spans cols 1-2 (after the padding space)
+    if m[3] == 1 and m[4].end_col == 2 then return m[4].hl_group end
+  end
+end
+-- The *n comment-count token on a row, or nil.
+local function count_at(row)
+  return panel_lines()[row]:match('%*%d+')
+end
+-- Is the count token on a row highlighted OrcaPanelCount?
+local function count_hl_at(row)
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(panel_buf(), PNS,
+    { row - 1, 0 }, { row - 1, -1 }, { details = true })) do
+    if m[4].hl_group == 'OrcaPanelCount' then return true end
+  end
+  return false
+end
+local function panel_statusline()
+  return vim.api.nvim_get_option_value('statusline', { win = panel_win() })
+end
 
 -- Bare review: trunk...HEAD, trunk resolved from the common dir (main).
 orca.review('')
-local qf = vim.fn.getqflist({ id = 0, items = true, title = true, size = true })
-local orca_qfid = qf.id
-check(qf.title == 'OrcaReview main...HEAD', 'qf title is OrcaReview main...HEAD, got: ' .. qf.title)
-check(qf.size == 5, 'five changed files, got ' .. qf.size)
-local texts = {}
-for i, item in ipairs(qf.items) do
-  texts[i] = item.text .. ' | ' .. vim.fn.fnamemodify(vim.fn.bufname(item.bufnr), ':t')
-end
-out('LIST ' .. table.concat(texts, ' ;; '))
--- trunk-only.txt (trunk moved after branch point) must NOT be in the list
-check(not table.concat(texts, ';'):find('trunk%-only'), 'merge-base diff excludes trunk-only.txt')
-check(table.concat(texts, ';'):find('renamed%-from%.txt → renamed%-to%.txt') ~= nil, 'rename shown as old → new')
-check(table.concat(texts, ';'):find('%(binary%)') ~= nil, 'binary file marked (binary)')
-
--- The quickfix entry index of the file matching pat, in orca's list.
-local function idx_of(pat)
-  local q = vim.fn.getqflist({ id = 0, items = true })
-  for i, item in ipairs(q.items) do
-    if vim.fn.bufname(item.bufnr):find(pat, 1, true) then return i end
-  end
-end
+check(panel_buf() ~= nil, 'panel buffer orca://review exists')
+check(panel_win() ~= nil, 'panel window is open')
+check(panel_statusline() == 'OrcaReview main...HEAD',
+  'panel statusline is OrcaReview main...HEAD, got: ' .. tostring(panel_statusline()))
+local lines = panel_lines()
+out('LIST ' .. table.concat(lines, ' ;; '))
+check(#lines == 5, 'five changed files, got ' .. #lines)
+check(not table.concat(lines, ';'):find('trunk%-only'), 'merge-base diff excludes trunk-only.txt')
+check(table.concat(lines, ';'):find('R  renamed%-from%.txt → renamed%-to%.txt') ~= nil,
+  'rename shown as R old → new')
+check(table.concat(lines, ';'):find('M  img%.bin %(binary%)') ~= nil, 'binary file marked (binary)')
+check(vim.bo[panel_buf()].filetype == 'orca-panel', 'panel filetype is orca-panel')
+check(vim.bo[panel_buf()].modifiable == false, 'panel buffer is not modifiable')
+check(vim.api.nvim_win_get_height(panel_win()) == 5, 'panel height tracks the entry count (5)')
+local lay = vim.fn.winlayout()
+check(lay[1] == 'col' and lay[2][#lay[2]][1] == 'leaf' and lay[2][#lay[2]][2] == panel_win(),
+  'panel is the full-width bottom strip')
+check(status_hl(idx_of('a%.txt')) == 'OrcaPanelRemoved', 'D letter highlighted OrcaPanelRemoved')
+check(status_hl(idx_of('c%.txt')) == 'OrcaPanelAdded', 'A letter highlighted OrcaPanelAdded')
+check(status_hl(idx_of('renamed')) == 'OrcaPanelRenamed', 'R letter highlighted OrcaPanelRenamed')
+check(status_hl(idx_of('src/b%.lua')) == 'OrcaPanelChanged', 'M letter highlighted OrcaPanelChanged')
 
 -- Review auto-opens the first file (deleted a.txt): both sides scratch, diff on.
 local wins = vim.api.nvim_tabpage_list_wins(0)
@@ -58,31 +112,38 @@ local diffwins, scratchbufs = 0, 0
 for _, w in ipairs(wins) do
   if vim.wo[w].diff then diffwins = diffwins + 1 end
   local b = vim.api.nvim_win_get_buf(w)
-  if vim.bo[b].buftype == 'nofile' then scratchbufs = scratchbufs + 1 end
+  if vim.bo[b].buftype == 'nofile' and b ~= panel_buf() then scratchbufs = scratchbufs + 1 end
 end
-check(#wins == 3, 'three windows (left, right, quickfix), got ' .. #wins)
+check(#wins == 3, 'three windows (left, right, panel), got ' .. #wins)
 check(diffwins == 2, 'two windows in diff mode, got ' .. diffwins)
 check(scratchbufs == 2, 'deleted file: both sides scratch, got ' .. scratchbufs)
+check(panel_cur() == 1, 'current-file mark on entry 1')
 
--- Regression: the qf <CR> map survives the competing FileType autocmd and
--- every list refresh. Only keystroke-level simulation reproduces the
--- clobber — API calls bypass the mapping entirely.
-vim.cmd('copen')
+-- The `open` action: <CR> in the panel opens the file under the cursor and
+-- focuses its diff — the old :cc feel. The buffer is orca's alone, so the
+-- competing FileType map registered above must lose by ordering, forever
+-- (nothing re-runs ftplugins on it). Keystroke-level simulation only — API
+-- calls bypass mappings entirely.
+vim.api.nvim_set_current_win(panel_win())
+check(vim.fn.maparg('<CR>', 'n', false, true).desc == "orca: open this file's diff",
+  "orca's <CR> beats the competing FileType-orca-panel map")
 keys('2G')
 keys('<CR>')
 local cur = vim.api.nvim_buf_get_name(0)
-check(cur:find('c.txt', 1, true) ~= nil, '<CR> on entry 2 opens its pair despite competing FileType-qf map, got ' .. cur)
+check(cur:find('c.txt', 1, true) ~= nil, '<CR> on entry 2 opens its pair, got ' .. cur)
 check(vim.wo.diff, 'entry 2 right window is in diff mode')
+check(panel_cur() == 2, 'current-file mark follows the open')
 
 -- Modified file: right side is the real working-tree buffer, left scratch.
-local bidx = idx_of('src/b.lua')
+local bidx = idx_of('src/b%.lua')
 orca.open(bidx)
 local name = vim.api.nvim_buf_get_name(0)
 check(name:find('src/b.lua', 1, true) ~= nil, 'right side is working-tree src/b.lua, got ' .. name)
 check(vim.bo.buftype == '', 'right side is a real buffer')
 check(vim.wo.diff, 'right window in diff mode')
-check(vim.fn.maparg(']q', 'n', false, true).buffer == 1, ']q is buffer-local on the right side')
--- The default surface is native keys only — nothing leader-shaped ships.
+-- next/prev ship unbound: with no orca quickfix list there is no native
+-- key left to upgrade, and ]q must keep meaning the user's quickfix-next.
+check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'next/prev ship unbound — ]q left alone')
 check(vim.fn.maparg('<leader>rc', 'n', false, true).buffer ~= 1
   and vim.fn.maparg('<leader>rq', 'n', false, true).buffer ~= 1, 'no leader-shaped defaults')
 -- left side content is the merge-base version
@@ -129,6 +190,14 @@ check(c1 and c1.quoted == 'line2 CHANGED', 'quoted holds the anchor line text')
 check(c1 and c1.status == 'open', 'new comment is open')
 check(c1 and c1.id == 1, 'first comment carries id 1')
 check(#vim.api.nvim_buf_get_extmarks(0, NS, 0, -1, {}) == 1, 'comment shown as an extmark in the buffer')
+check(count_at(bidx) == '*1', 'panel counts the new comment — *1')
+check(count_hl_at(bidx), 'count token highlighted OrcaPanelCount')
+check(count_at(idx_of('c%.txt')) == nil, 'no count on an uncommented file')
+-- The count column is reserved on comment-less rows: names stay aligned.
+local commented = panel_lines()[bidx]
+local plain = panel_lines()[idx_of('c%.txt')]
+check(commented:find('src/b.lua', 1, true) == plain:find('c.txt', 1, true),
+  'count column reserved — names aligned across commented and plain rows')
 
 -- Edit: :OrcaComment on the commented line prefills; writing rewrites the
 -- one comment instead of adding another.
@@ -176,6 +245,7 @@ local ranged
 for _, c in ipairs(data and data.comments or {}) do if c.line == 3 then ranged = c end end
 check(ranged ~= nil and ranged.end_line == 4, 'range comment records end_line')
 check(ranged ~= nil and ranged.id == 2, 'ids increment globally — range comment is #2')
+check(count_at(bidx) == '*2', 'panel count is live — *2 after the second comment')
 
 -- Delete: :OrcaCommentDelete anywhere inside the covered range clears it.
 vim.api.nvim_win_set_cursor(0, { 4, 0 })
@@ -183,6 +253,7 @@ vim.cmd('OrcaCommentDelete')
 data = read_notes()
 check(data and #data.comments == 1 and data.comments[1].line == 2,
   'OrcaCommentDelete removes the covering comment')
+check(count_at(bidx) == '*1', 'panel count is live — back to *1 after the delete')
 
 -- Ids never recycle: the next comment after a delete takes a fresh id, so
 -- the deleted #2 stays a permanent gap and old #N references can't rebind.
@@ -220,30 +291,29 @@ check(count_diff_wins() == 2, 'pair intact under unrelated buffer in a separate 
 vim.cmd('close')
 
 -- Wandering off inside the right diff window collapses the pair but keeps
--- the session alive.
+-- the session (and the panel) alive.
 orca.open(bidx) -- src/b.lua; focus on the right side
 vim.cmd('edit unchanged.txt')
-local shown_orca = 0
+local shown_gone = 0
 for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-  if vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):find('^orca://') then
-    shown_orca = shown_orca + 1
-  end
+  local n = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w))
+  if n:find('^orca://') and n ~= 'orca://review' then shown_gone = shown_gone + 1 end
 end
 check(count_diff_wins() == 0, 'collapse: no window left in diff mode, got ' .. count_diff_wins())
-check(shown_orca == 0, 'collapse: no orca:// buffer displayed')
-check(#vim.api.nvim_tabpage_list_wins(0) == 2, 'collapse: left split closed (qf + wandered window)')
+check(shown_gone == 0, 'collapse: no orca:// pair buffer displayed')
+check(#vim.api.nvim_tabpage_list_wins(0) == 2, 'collapse: left split closed (panel + wandered window)')
 check(vim.api.nvim_buf_get_name(0):find('unchanged.txt', 1, true) ~= nil, 'collapse leaves the wandered-to buffer alone')
-check(vim.fn.getqflist({ size = true }).size == 5, 'collapse keeps the quickfix list')
+check(#panel_lines() == 5 and panel_win() ~= nil, 'collapse keeps the panel')
 
 -- Entering a changed file from the collapsed state reopens its pair around
--- the window the user is in, quickfix selection synced. Navigation-driven
+-- the window the user is in, panel selection synced. Navigation-driven
 -- opens are deferred one tick (mid-:close splits are illegal), so drain
 -- the event loop before asserting.
 vim.cmd('edit c.txt')
 drain(function() return count_diff_wins() == 2 end)
 check(count_diff_wins() == 2, ':edit of a changed file reopens its pair, diff wins: ' .. count_diff_wins())
 check(vim.api.nvim_buf_get_name(0):find('c.txt', 1, true) ~= nil, 'reopened pair holds the entered file')
-check(vim.fn.getqflist({ idx = 0 }).idx == 2, 'qf selection synced to the entered file, got ' .. vim.fn.getqflist({ idx = 0 }).idx)
+check(panel_cur() == 2, 'panel selection synced to the entered file, got ' .. tostring(panel_cur()))
 
 -- Stealing the *left* (scratch) split collapses the pair too — and must
 -- not close the window the user's buffer now occupies.
@@ -272,44 +342,49 @@ check(#vim.api.nvim_tabpage_list_wins(0) == 2 and binshown == 1, 'binary entry s
 check(count_diff_wins() == 0, 'binary entry: no diff mode')
 
 -- The session still answers after all the wandering.
-local before_idx = vim.fn.getqflist({ idx = 0 }).idx
+local before_idx = panel_cur()
 orca.next()
-check(vim.fn.getqflist({ idx = 0 }).idx == before_idx + 1, ':OrcaReviewNext resumes the walk after collapse/reopen')
+check(panel_cur() == before_idx + 1, ':OrcaReviewNext resumes the walk after collapse/reopen')
 check(count_diff_wins() == 2, 'walk resumed with a live diff pair')
 
--- ]q/[q honor a count (the native contract): 3]q moves three files, an
--- overshooting count clamps at the list edge, the bare edge case keeps the
--- polite message and stays put.
-local function qfidx() return vim.fn.getqflist({ idx = 0 }).idx end
-orca.open(1)
-keys('3]q')
-check(qfidx() == 4, '3]q moves three files, got ' .. qfidx())
-keys('9]q')
-check(qfidx() == 5, 'overshooting count clamps to the last file, got ' .. qfidx())
-keys(']q')
-check(qfidx() == 5, 'plain ]q at the edge stays put, got ' .. qfidx())
-keys('2[q')
-check(qfidx() == 3, '2[q moves two files back, got ' .. qfidx())
+-- Leaving a deleted-file pair must not mangle the layout: its right side
+-- is a scratch too, and wiping a displayed scratch closes its window —
+-- which left the panel as the last window standing, ballooned to fill the
+-- screen. The right window must survive as the next pair's anchor.
+orca.open(1) -- deleted a.txt: both sides scratch
+local h_before = vim.api.nvim_win_get_height(panel_win())
+orca.open(bidx)
+check(vim.api.nvim_win_get_height(panel_win()) == h_before,
+  ('panel height survives leaving a deleted-file pair (%d), got %d')
+    :format(h_before, vim.api.nvim_win_get_height(panel_win())))
+check(count_diff_wins() == 2 and #vim.api.nvim_tabpage_list_wins(0) == 3,
+  'next pair opened in the surviving right window')
 
--- List-identity guard: a foreign list landing in the qf window mid-session
--- gets native behavior from orca's keys, not a hijacked M.open.
-orca.open(1)
-vim.fn.setqflist({}, ' ', { title = 'foreign', items = {
-  { filename = 'unchanged.txt', lnum = 1, text = 'one' },
-  { filename = 'unchanged.txt', lnum = 1, text = 'two' },
-} })
-vim.cmd('copen')
-keys('1G')
-keys('<CR>')
-check(vim.api.nvim_buf_get_name(0):find('unchanged.txt', 1, true) ~= nil,
-  'guard: <CR> on a foreign list does the stock jump, got ' .. vim.api.nvim_buf_get_name(0))
-vim.cmd('copen')
-keys(']q')
-check(qfidx() == 2 and vim.api.nvim_buf_get_name(0):find('unchanged.txt', 1, true) ~= nil,
-  'guard: ]q on a foreign list runs :cnext, foreign idx ' .. qfidx())
-vim.cmd('silent colder') -- back to orca's list for the close checks
+-- ==================== panel toggle ladder ====================
 
--- Close: no scratch buffers survive, diff off everywhere, qf list stays.
+-- Closing the panel window hides the view; the session lives, and
+-- :OrcaReviewPanel is the discoverable, always-alive way back (where
+-- :colder was manual, position-dependent, and mortal).
+orca.open(1)
+vim.api.nvim_win_close(panel_win(), true)
+check(panel_win() == nil, 'closing the panel window hides the view')
+check(panel_buf() ~= nil, 'panel buffer survives its window')
+orca.next() -- navigation keeps working with the panel hidden
+check(panel_cur() == 2, 'hidden panel keeps rendering session state')
+vim.cmd('OrcaReviewPanel')
+check(panel_win() ~= nil and vim.api.nvim_get_current_win() == panel_win(),
+  'ladder: hidden → open and focus')
+check(vim.api.nvim_win_get_cursor(panel_win())[1] == 2,
+  'reopened panel parks the cursor on the current file')
+vim.cmd('OrcaReviewPanel')
+check(panel_win() == nil, 'ladder: focused → close the window')
+vim.cmd('OrcaReviewPanel') -- back open, focused
+vim.cmd('wincmd k')
+check(vim.api.nvim_get_current_win() ~= panel_win(), 'moved focus off the panel')
+vim.cmd('OrcaReviewPanel')
+check(vim.api.nvim_get_current_win() == panel_win(), 'ladder: visible but unfocused → focus')
+
+-- Close: no orca buffers survive (panel included), diff off everywhere.
 orca.close()
 local leftovers = 0
 for _, b in ipairs(vim.api.nvim_list_bufs()) do
@@ -317,12 +392,11 @@ for _, b in ipairs(vim.api.nvim_list_bufs()) do
     leftovers = leftovers + 1
   end
 end
-check(leftovers == 0, 'no orca:// scratch buffers survive close')
+check(leftovers == 0, 'no orca:// buffers survive close')
+check(panel_buf() == nil, 'panel buffer destroyed at close')
 for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
   check(not vim.wo[w].diff, 'diff off in window ' .. w)
 end
-check(vim.fn.getqflist({ size = true }).size == 5, 'quickfix list left in place')
-check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'buffer-local maps removed from real buffer')
 check(vim.fn.filereadable(notes_path) == 1, 'notes file survives close — that is the point')
 
 -- ================== notes round-trip across sessions ==================
@@ -336,9 +410,10 @@ data.comments[1].resolution = 'debounced it'
 data.comments[1].id = nil -- a file from before ids existed: backfilled on load
 vim.fn.writefile({ vim.json.encode(data) }, notes_path)
 orca.review('main...feature')
-qf = vim.fn.getqflist({ title = true })
-check(qf.title == 'OrcaReview main...feature', 'explicit range title, got: ' .. qf.title)
-orca.open(idx_of('src/b.lua'))
+check(panel_statusline() == 'OrcaReview main...feature',
+  'explicit range title, got: ' .. tostring(panel_statusline()))
+check(count_at(idx_of('src/b%.lua')) == '*1', 'loaded comment already counted in the panel')
+orca.open(idx_of('src/b%.lua'))
 local marks = vim.api.nvim_buf_get_extmarks(0, NS, 0, -1, { details = true })
 check(#marks == 1, 'reloaded comment decorated after restart, got ' .. #marks .. ' extmarks')
 local shown = {}
@@ -356,7 +431,7 @@ orca.close()
 -- blocked and the file is never touched.
 vim.fn.writefile({ vim.json.encode({ version = 2, comments = {} }) }, notes_path)
 orca.review('')
-orca.open(idx_of('src/b.lua'))
+orca.open(idx_of('src/b%.lua'))
 pcall(vim.cmd, 'OrcaComment') -- pcall: the ERROR-level notify throws in headless
 check(vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil,
   'unknown notes version blocks commenting')
@@ -371,15 +446,15 @@ vim.fn.delete(notes_path)
 -- at the window edge), so the plugin soft-wraps each stored line at
 -- placement time to the target window's text width.
 orca.review('')
-orca.open(idx_of('src/b.lua'))
+orca.open(idx_of('src/b%.lua'))
 local rwin = vim.api.nvim_get_current_win()
 local rbuf = vim.api.nvim_get_current_buf()
 local function virt_chunks()
-  local out = {}
+  local vout = {}
   for _, m in ipairs(vim.api.nvim_buf_get_extmarks(rbuf, NS, 0, -1, { details = true })) do
-    for _, vl in ipairs(m[4].virt_lines or {}) do out[#out + 1] = vl[1][1] end
+    for _, vl in ipairs(m[4].virt_lines or {}) do vout[#vout + 1] = vl[1][1] end
   end
-  return out
+  return vout
 end
 local function text_width()
   local info = vim.fn.getwininfo(rwin)[1]
@@ -470,7 +545,7 @@ vim.fn.delete(notes_path)
 -- grow with the text, and closing the float restores the real virt_lines
 -- whichever way it dies.
 orca.review('')
-orca.open(idx_of('src/b.lua'))
+orca.open(idx_of('src/b%.lua'))
 local fsrc_win = vim.api.nvim_get_current_win()
 local fsrc_buf = vim.api.nvim_get_current_buf()
 local function first_mark()
@@ -578,7 +653,7 @@ check(dangling == 0, 'no dangling float autocmds after close, got ' .. dangling)
 -- Forced split path (the 0.9 fallback) still runs the same contract.
 require('orca.notes').float_input = false
 orca.review('')
-orca.open(idx_of('src/b.lua'))
+orca.open(idx_of('src/b%.lua'))
 vim.api.nvim_win_set_cursor(0, { 2, 0 })
 vim.cmd('OrcaComment')
 check(vim.api.nvim_win_get_config(0).relative == '', 'forced fallback opens a split, not a float')
@@ -591,59 +666,160 @@ orca.close()
 require('orca.notes').float_input = true
 vim.fn.delete(notes_path)
 
--- vim.g.orca_mappings resolves at session start: per-action override,
--- per-action disable, untouched actions keep their defaults, and the
--- unbound-by-default comment/delete attach when the user opts in
--- (comment in n and x).
-vim.g.orca_mappings = { next = ')f', prev = false, comment = '<leader>v', delete = '<leader>x' }
+-- ================= comment navigation: review-wide =================
+
+-- Comments are orca's own extmarks — nothing native can walk them. The
+-- walk is review-wide: file order, then line, crossing files via the pair.
 orca.review('')
-check(vim.fn.maparg(')f', 'n', false, true).buffer == 1, 'orca_mappings: next remapped to )f')
-check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'orca_mappings: default ]q gone when remapped')
-check(vim.fn.maparg('[q', 'n', false, true).buffer ~= 1, 'orca_mappings: prev = false disables the map')
+orca.open(idx_of('c%.txt'))
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+vim.cmd('OrcaComment')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'walk one' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+orca.open(idx_of('src/b%.lua'))
+vim.api.nvim_win_set_cursor(0, { 3, 0 })
+vim.cmd('OrcaComment')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'walk two' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+check(count_at(idx_of('c%.txt')) == '*1' and count_at(idx_of('src/b%.lua')) == '*1',
+  'both walk comments counted in the panel')
+
+-- From src/b.lua:3, prev crosses back into c.txt:1 through its pair.
+vim.cmd('OrcaCommentPrev')
+check(vim.api.nvim_buf_get_name(0):find('c.txt', 1, true) ~= nil and vim.fn.line('.') == 1,
+  ('OrcaCommentPrev crosses into the previous file, got %s:%d')
+    :format(vim.api.nvim_buf_get_name(0), vim.fn.line('.')))
+check(vim.wo.diff, 'cross-file jump landed in a live pair')
+vim.cmd('OrcaCommentPrev')
+check(vim.api.nvim_buf_get_name(0):find('c.txt', 1, true) ~= nil and vim.fn.line('.') == 1,
+  'clamped at the first comment — stays put')
+vim.cmd('OrcaCommentNext')
+check(vim.api.nvim_buf_get_name(0):find('src/b.lua', 1, true) ~= nil and vim.fn.line('.') == 3,
+  ('OrcaCommentNext crosses forward, got %s:%d')
+    :format(vim.api.nvim_buf_get_name(0), vim.fn.line('.')))
+vim.cmd('OrcaCommentNext')
+check(vim.fn.line('.') == 3, 'clamped at the last comment — stays put')
+
+-- From the panel (no cursor in a reviewed file), the walk enters the
+-- current file from its near boundary.
+vim.api.nvim_set_current_win(panel_win())
+vim.cmd('OrcaCommentNext')
+check(vim.api.nvim_buf_get_name(0):find('src/b.lua', 1, true) ~= nil and vim.fn.line('.') == 3,
+  'walk from the panel enters the current file at its first comment')
+
+-- Anchors are extmarks: an insertion above the src/b.lua comment moves the
+-- walk target too (positions self-heal, no stale line numbers).
+vim.fn.append(0, 'walk drift line')
+orca.open(idx_of('c%.txt'))
+vim.cmd('OrcaCommentNext')
+check(vim.api.nvim_buf_get_name(0):find('src/b.lua', 1, true) ~= nil and vim.fn.line('.') == 4,
+  'walk target rides buffer edits (extmark-resolved), got line ' .. vim.fn.line('.'))
+vim.api.nvim_buf_set_lines(0, 0, 1, false, {})
+vim.bo.modified = false
+orca.close()
+vim.fn.delete(notes_path)
+
+-- ============== the restore snippet + eviction-proofing ==============
+
+-- The one-line README snippet restores the old feel: bound next/prev honor
+-- counts, clamp at the edge, and keep the polite edge message.
+vim.g.orca_mappings = { next = ']q', prev = '[q' }
+orca.review('')
+orca.open(1)
+check(vim.fn.maparg(']q', 'n', false, true).buffer == 1, 'restored ]q is buffer-local on the pair')
+keys('3]q')
+check(panel_cur() == 4, '3]q moves three files, got ' .. tostring(panel_cur()))
+keys('9]q')
+check(panel_cur() == 5, 'overshooting count clamps to the last file, got ' .. tostring(panel_cur()))
+keys(']q')
+check(panel_cur() == 5, 'plain ]q at the edge stays put, got ' .. tostring(panel_cur()))
+keys('2[q')
+check(panel_cur() == 3, '2[q moves two files back, got ' .. tostring(panel_cur()))
+
+-- The point of the change: a foreign quickfix list mid-session (:grep, LSP
+-- references) changes nothing about the panel or the keys — where it used
+-- to evict the review list and demand :colder.
+orca.open(1)
+vim.fn.setqflist({}, ' ', { title = 'foreign', items = {
+  { filename = 'unchanged.txt', lnum = 1, text = 'one' },
+  { filename = 'unchanged.txt', lnum = 1, text = 'two' },
+} })
+vim.cmd('botright copen')
+check(#panel_lines() == 5 and panel_win() ~= nil, 'foreign qf list leaves the panel untouched')
+check(panel_cur() == 1, 'current-file mark untouched by the foreign list')
+vim.api.nvim_set_current_win(panel_win())
+keys(']q')
+check(panel_cur() == 2, 'orca keys stay orca\'s with a foreign list current, got ' .. tostring(panel_cur()))
+check(vim.fn.getqflist({ title = true }).title == 'foreign', 'the foreign list stays the user\'s')
+vim.api.nvim_set_current_win(panel_win())
+keys('5G')
+keys('<CR>')
+check(vim.api.nvim_buf_get_name(0):find('src/b.lua', 1, true) ~= nil,
+  '<CR> in the panel still opens the pair, got ' .. vim.api.nvim_buf_get_name(0))
+local qf_still = false
+for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+  if vim.bo[vim.api.nvim_win_get_buf(w)].buftype == 'quickfix' then qf_still = true end
+end
+check(qf_still, 'the pair never opens into the foreign quickfix window')
+vim.cmd('cclose')
+orca.close()
+vim.g.orca_mappings = nil
+
+-- vim.g.orca_mappings resolves at session start: per-action override, and
+-- the unbound-by-default actions (comment/delete/panel/comment_next)
+-- attach when the user opts in (comment in n and x).
+vim.g.orca_mappings = { next = ')f', comment = '<leader>v', delete = '<leader>x',
+  panel = '<leader>p', comment_next = ')c' }
+orca.review('')
+check(vim.fn.maparg(')f', 'n', false, true).buffer == 1, 'orca_mappings: next bound to )f')
+check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'orca_mappings: ]q stays unbound')
 check(vim.fn.maparg('<leader>v', 'n', false, true).buffer == 1, 'orca_mappings: opt-in comment binding attaches')
 check(vim.fn.maparg('<leader>v', 'x', false, true).buffer == 1, 'orca_mappings: comment binding also maps visual mode')
+check(vim.fn.maparg(')c', 'n', false, true).buffer == 1, 'orca_mappings: opt-in comment_next binding attaches')
 -- and the configured key still opens the comment input (default mapleader
 -- is backslash, so <leader>v arrives as \v)
-orca.open(idx_of('src/b.lua'))
+orca.open(idx_of('src/b%.lua'))
+local mapped_src_win = vim.api.nvim_get_current_win()
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
 keys('\\v')
 check(vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) ~= nil,
   'configured comment key opens the input, got ' .. vim.api.nvim_buf_get_name(0))
-vim.cmd('quit') -- abort: nothing typed, nothing written
--- the opt-in delete binding removes the comment under the cursor (the
--- abort drops focus on whichever window quit picks — refocus the
--- working-tree side first)
-for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-  local b = vim.api.nvim_win_get_buf(w)
-  if vim.bo[b].buftype == '' and vim.api.nvim_buf_get_name(b):find('src/b.lua', 1, true) then
-    vim.api.nvim_set_current_win(w)
-  end
-end
-check(vim.fn.maparg('<leader>x', 'n', false, true).buffer == 1,
-  'orca_mappings: opt-in delete binding attaches')
-vim.api.nvim_win_set_cursor(0, { 2, 0 })
-keys('\\v')
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'doomed' })
 vim.cmd('write')
 drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
 check(vim.fn.filereadable(notes_path) == 1, 'delete setup: comment written to disk')
+vim.api.nvim_set_current_win(mapped_src_win)
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+check(vim.fn.maparg('<leader>x', 'n', false, true).buffer == 1,
+  'orca_mappings: opt-in delete binding attaches')
 keys('\\x')
 check(vim.fn.filereadable(notes_path) == 0,
   'configured delete key removes the comment (empty file deleted)')
+-- The panel action rides the same ladder as :OrcaReviewPanel.
+keys('\\p')
+check(vim.api.nvim_get_current_win() == panel_win(), 'panel key focuses the visible panel')
+keys('\\p')
+check(panel_win() == nil, 'panel key closes the focused panel')
+keys('\\p') -- focus fell back into a session buffer, which carries the map
+check(panel_win() ~= nil and vim.api.nvim_get_current_win() == panel_win(),
+  'panel key reopens from a session buffer')
 orca.close()
+check(vim.fn.maparg(')f', 'n', false, true).buffer ~= 1, 'buffer-local maps removed at close')
 
 -- setup() is sugar over the same variable; false drops every map, and the
--- stock qf <CR> still opens pairs through the navigation follower.
+-- BufEnter navigation follower still opens pairs without any keys.
 orca.setup({ mappings = false })
 check(vim.g.orca_mappings == false, 'setup({mappings = ...}) writes vim.g.orca_mappings')
 orca.review('')
-check(vim.fn.maparg(')f', 'n', false, true).buffer ~= 1
-  and vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'mappings = false: no session maps set')
-vim.cmd('copen')
-check(vim.fn.maparg('<CR>', 'n', false, true).desc == nil, 'mappings = false: qf <CR> not claimed')
-keys('2G')
-keys('<CR>')
+check(vim.fn.maparg(')f', 'n', false, true).buffer ~= 1, 'mappings = false: no session maps set')
+vim.api.nvim_set_current_win(panel_win())
+check(vim.fn.maparg('<CR>', 'n', false, true).desc == nil, 'mappings = false: panel <CR> not claimed')
+vim.cmd('wincmd k')
+vim.cmd('edit c.txt')
 drain(function() return count_diff_wins() == 2 end)
-check(count_diff_wins() == 2, 'mappings = false: stock qf <CR> still opens the pair via BufEnter follow')
+check(count_diff_wins() == 2, 'mappings = false: navigation follower still opens pairs')
 orca.close()
 vim.g.orca_mappings = nil
 

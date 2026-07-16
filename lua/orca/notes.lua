@@ -158,6 +158,31 @@ local function unplace(c)
   c.buf, c.mark = nil, nil
 end
 
+-- Per-file comment counts, { [path] = n } — the panel's right-aligned [n].
+function M.counts()
+  local counts = {}
+  if state then
+    for _, c in ipairs(state.comments) do
+      counts[c.file] = (counts[c.file] or 0) + 1
+    end
+  end
+  return counts
+end
+
+-- Every comment's current position, { { path, line }, ... }. Lines are
+-- extmark-resolved at call time for comments placed in a live buffer, so
+-- positions self-heal after edits; unplaced ones report their stored line.
+function M.locations()
+  local locs = {}
+  if state then
+    for _, c in ipairs(state.comments) do
+      sync(c)
+      locs[#locs + 1] = { path = c.file, line = c.line }
+    end
+  end
+  return locs
+end
+
 -- The comment whose anchored range covers `line` of `path`, plus its index.
 local function covering(path, line)
   for i, c in ipairs(state.comments) do
@@ -199,6 +224,7 @@ function M.start(opts)
     path = ('%s/%s.json'):format(dir, notes_key(opts.head, opts.range)),
     head = opts.head,
     range = opts.range,
+    on_change = opts.on_change,
     comments = {},
     next_id = 1,
     resized = {},
@@ -298,9 +324,13 @@ end
 -- mean the same thing to the consuming skill.
 function M.save()
   if not state or state.blocked then return end
+  -- Every mutation funnels through here, so the owner's on_change hook
+  -- (the panel's live comment counts) fires exactly once per change.
+  local on_change = state.on_change
   for _, c in ipairs(state.comments) do sync(c) end
   if #state.comments == 0 then
     if vim.fn.filereadable(state.path) == 1 then vim.fn.delete(state.path) end
+    if on_change then on_change() end
     return
   end
   local out = {}
@@ -331,6 +361,7 @@ function M.save()
     updated = now,
     comments = out,
   }) }, state.path)
+  if on_change then on_change() end
 end
 
 -- N spacer virt_lines: the '┃ ' gutter-bar prefix with no text. While the

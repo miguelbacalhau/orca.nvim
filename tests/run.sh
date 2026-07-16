@@ -92,7 +92,7 @@ mkdir "$CLONE/.orca"
 cd "$CLONE"
 NOUT=$(nvim --clean --headless -n --cmd "set rtp+=$ROOT" \
   "+lua require('orca').review('')" \
-  "+lua local q = vim.fn.getqflist({ title = true, size = true }); print(('NORMAL %s %d'):format(q.title, q.size))" \
+  "+lua local p = require('orca.panel'); local w = p.win(); print(('NORMAL %s %d'):format(vim.api.nvim_get_option_value('statusline', { win = w }), vim.api.nvim_buf_line_count(p.buf())))" \
   +qa! 2>&1)
 case "$NOUT" in
   *"NORMAL OrcaReview main...HEAD 5"*) echo 'OK   normal checkout: bare review defaults to main...HEAD' ;;
