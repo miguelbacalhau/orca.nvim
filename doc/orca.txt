@@ -66,7 +66,9 @@ COMMANDS                                                        *orca-commands*
 :OrcaReviewNext
 :OrcaReviewPrev
         Move to the next/previous changed file, tearing down the current
-        pair and opening the new one.
+        pair and opening the new one. The walk follows the panel: a file
+        a hidden group folded away is not one it stops on
+        (|orca-hidden|).
 
                                                              *:OrcaReviewPanel*
 :OrcaReviewPanel
@@ -141,12 +143,89 @@ panel window (|:q|, |CTRL-W_c|, a window-management plugin) hides the
 view; |:OrcaReviewPanel| brings it back, re-rendered from session state.
 The session's range shows in the panel window's 'statusline'.
 
+What the panel lists is a view over the session's changed files, not all
+of them: named groups — tests by default — fold away behind the last row
+(|orca-hidden|). The panel's rows are that view, so a row number and a
+file's position in the diff part ways as soon as something is folded.
+
 Highlights, all with sensible defaults you can override:
 `OrcaPanelAdded`, `OrcaPanelRemoved`, `OrcaPanelChanged`,
 `OrcaPanelRenamed` (the status letters — linked to the builtin |hl-Added|
 / |hl-Removed| / |hl-Changed| groups), `OrcaPanelCurrent` (the current
 file's line, linked to |hl-CursorLine|), `OrcaPanelCount` (the `*n`
-comment counts, purple by default).
+comment counts, purple by default), `OrcaPanelHidden` (the summary row,
+linked to |hl-Comment|).
+
+==============================================================================
+HIDDEN GROUPS                                                     *orca-hidden*
+
+An orca run's diff is often mostly tests, and the look-through before
+merge wants the source in front of it — so files matching a named group
+fold away, and the panel's last row says so: >
+
+         M *2 lua/orca/panel.lua
+         A    lua/orca/filter.lua
+         …    2 files hidden (tests) — <CR> shows
+<
+That row is the indicator and the control: <CR> on it toggles, and it
+stays in both states (inverted — `showing everything — <CR> hides 2`), so
+the way back is never something you have to already know about. There is
+no command; like the panel's `open`, this is an action on the panel.
+`hidden` in |vim.g.orca_mappings| binds a key that also works from inside
+a diff pair, and `require('orca').toggle_hidden()` is the scriptable
+entry point.
+
+Hiding is a *view*, never a filter on the session. A hidden file is still
+a full entry: |:edit| opens its diff pair, |:OrcaComment| anchors to it,
+its comments reach the notes file and orca's addressing step. Three things
+pin an entry visible whatever its group says:
+
+        - a comment on it — once you have said something about a file it
+          keeps its row (and its `*n`), and deleting the last comment
+          folds it back
+        - being the file you are currently in
+        - being the last one left: hiding every file would open a review
+          with nothing in it, so an all-tests branch shows everything and
+          says why
+
+                                                    *vim.g.orca_review_hidden*
+Sessions start hidden. Set it to `false` to start showing everything (the
+summary row is still there, offering to hide): >
+
+        vim.g.orca_review_hidden = false
+<
+                                                    *vim.g.orca_review_groups*
+A group is a list of globs, where the `/` decides what gets matched:
+
+        `*_test.go`       no slash          the basename
+        `tests/`          trailing slash    a directory, at any depth
+        `spec/**/*.rb`    slash inside      the whole repo-relative path
+        `/tests/`         leading slash     anchored at the repo root
+
+`*` stops at a separator, `**` crosses it, `?` is one non-separator
+character; everything else is literal. A rename folds away only when both
+of its names match — a file moving out of `tests/` is exactly the change
+you want in front of you.
+
+The shipped `tests` group: >
+
+        tests/  test/  spec/  __tests__/  testdata/
+        *_test.*  *_spec.*  *.test.*  *.spec.*  test_*.py  conftest.py
+<
+`vim.g.orca_review_groups` replaces a group's list outright (copy the list
+above to extend it) and `false` drops one; a new key adds a group. Every
+defined group rides the one toggle, so a group you never want hidden is a
+group you should not define: >
+
+        vim.g.orca_review_groups = {
+          generated = { '*.pb.go', 'package-lock.json', '__snapshots__/' },
+          tests = false,                    -- stop hiding tests
+        }
+<
+The defaults are deliberately literal — a too-greedy glob would silently
+drop real code from every review in every repo, which is the one thing
+this feature must never do. Fixture directories are absent on purpose:
+fixture data is frequently the thing under review.
 
 ==============================================================================
 REVIEW NOTES                                                       *orca-notes*
@@ -230,14 +309,20 @@ A `comment` binding maps normal mode (cursor line) and visual mode (the
 selected range). A `delete` binding deletes the comment on the cursor line,
 same as |:OrcaCommentDelete|. A `panel` binding rides the
 |:OrcaReviewPanel| ladder; `comment_next`/`comment_prev` are
-|:OrcaCommentNext|/|:OrcaCommentPrev|.
+|:OrcaCommentNext|/|:OrcaCommentPrev|. A `hidden` binding toggles the
+hidden groups from anywhere in the session (|orca-hidden|) — the one
+action with no command behind it, since the panel's summary row carries
+it.
 
                                                           *vim.g.orca_mappings*
 `vim.g.orca_mappings` reshapes the maps, read when a session starts (order
 relative to plugin load never matters). A table overrides per action — keys
 `next`, `prev`, `open`, `comment`, `delete`, `comment_next`,
-`comment_prev`, `panel`, `close` — with `false` dropping that one map; the
-whole variable set to `false` drops them all: >
+`comment_prev`, `panel`, `hidden`, `close` — with `false` dropping that
+one map; the
+whole variable set to `false` drops them all (`hidden` is the odd one out:
+it has no command, so dropping its map leaves the summary row as the only
+way to toggle): >
 
         vim.g.orca_mappings = { next = ']q', prev = '[q' }   -- the old keys
         vim.g.orca_mappings = false                          -- commands only
@@ -261,9 +346,10 @@ Install with your plugin manager, like any other plugin. lazy.nvim: >
 
         { "miguelbacalhau/orca.nvim" }
 <
-No setup() call required, no dependencies — |orca-keymaps| covers the only
-configuration. Any manager that installs from GitHub works the same way;
-updates ride the manager's own update flow.
+No setup() call required, no dependencies — |orca-keymaps| and
+|orca-hidden| cover the only configuration. Any manager that installs
+from GitHub works the same way; updates ride the manager's own update
+flow.
 
 Without a plugin manager, clone into Neovim's native packpath
 (|packages|): >

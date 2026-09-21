@@ -63,7 +63,58 @@ aligned, updating live as you comment), path, `(binary)` marker, renames as
 `old → new` — with the current file marked full-line. `<CR>` on a line opens
 that file's diff pair. Highlight groups, all overridable: `OrcaPanelAdded`,
 `OrcaPanelRemoved`, `OrcaPanelChanged`, `OrcaPanelRenamed`, `OrcaPanelCurrent`,
-`OrcaPanelCount`.
+`OrcaPanelCount`, `OrcaPanelHidden`.
+
+## Hidden files
+
+An orca run's diff is usually mostly tests, and the look-through before merge
+wants the source in front of it. So tests fold away, behind the panel's last
+row:
+
+```
+ M *2 lua/orca/panel.lua
+ A    lua/orca/filter.lua
+ …    2 files hidden (tests) — <CR> shows
+```
+
+That row is both the indicator and the control — `<CR>` on it toggles, and it
+stays in both states (inverted: `showing everything — <CR> hides 2`), so the
+hiding is never something you discover after merging. There is no command for
+it: like the panel's `<CR>`, this is an action on the panel. Bind a key that
+works from inside a diff pair too with
+`vim.g.orca_mappings = { hidden = "<leader>rh" }`, or call
+`require('orca').toggle_hidden()`.
+
+Hiding is a *view*, never a filter on the session. A hidden file is still a
+full entry: `:edit` opens its diff pair, `:OrcaComment` anchors to it, its
+comments reach the notes file and orca's addressing step. Three things pin a
+file visible whatever its group says — a comment on it (say something about a
+file and it keeps its row; delete the last comment and it folds back), being
+the file you're currently in, and being the last one left (hiding everything
+would open a review with nothing in it, so an all-tests branch shows
+everything and says why).
+
+Groups are globs, where the `/` decides what gets matched: no slash matches
+the basename (`*_test.go`), a trailing slash a directory at any depth
+(`tests/`), a slash inside the whole repo-relative path (`spec/**/*.rb`), a
+leading slash anchors at the repo root (`/tests/`). `*` stops at a separator,
+`**` crosses it. A rename folds away only when both its names match — a file
+moving out of `tests/` is exactly the change you want to see.
+
+```lua
+vim.g.orca_review_hidden = false            -- start showing everything
+vim.g.orca_review_groups = {
+  generated = { "*.pb.go", "package-lock.json", "__snapshots__/" },
+  tests = false,                            -- stop hiding tests
+}
+```
+
+Every defined group rides the one toggle, so a group you never want hidden is
+a group you shouldn't define. The shipped `tests` group is deliberately
+literal (`tests/ test/ spec/ __tests__/ testdata/`, `*_test.* *_spec.*
+*.test.* *.spec.* test_*.py conftest.py`) — a too-greedy glob would silently
+drop real code from every review in every repo, which is the one thing this
+must never do.
 
 ## Review notes
 
@@ -113,9 +164,10 @@ vim.g.orca_mappings = { comment = "<leader>rc", close = "<leader>rq" }
 
 `vim.g.orca_mappings` is read when a session starts: a table overrides per action
 (keys `next`, `prev`, `open`, `comment`, `delete`, `comment_next`, `comment_prev`,
-`panel`, `close`; `false` drops one map), or `false` wholesale for commands only.
-A `comment` binding maps both normal and visual mode; `delete` removes the comment
-on the cursor line; `panel` rides the `:OrcaReviewPanel` ladder. Hunk motion inside
+`panel`, `hidden`, `close`; `false` drops one map), or `false` wholesale for
+commands only. A `comment` binding maps both normal and visual mode; `delete`
+removes the comment on the cursor line; `panel` rides the `:OrcaReviewPanel`
+ladder; `hidden` toggles the hidden groups. Hunk motion inside
 a pair is native diff mode — `]c` / `[c` need no orca binding.
 `require('orca').setup{ mappings = ... }` is optional sugar over the same variable,
 so lazy.nvim's `opts` works too.
@@ -124,7 +176,9 @@ so lazy.nvim's `opts` works too.
 
 ## Direction
 
-v2 shipped review notes; v3 the owned panel and comment navigation. Deferred,
-addable behind the file's version field: left-side (deletion) comments,
-threads/replies, a severity taxonomy in the editor. Deferred on the panel side:
-a `:cdo`-style quickfix export, side placement, grouping.
+v2 shipped review notes; v3 the owned panel, comment navigation, and hidden
+groups. Deferred, addable behind the file's version field: left-side (deletion)
+comments, threads/replies, a severity taxonomy in the editor. Deferred on the
+panel side: a `:cdo`-style quickfix export, side placement, grouping — and on
+the hiding side, per-group toggling plus a `!pattern` escape hatch for "hide
+tests except `tests/helpers/`".

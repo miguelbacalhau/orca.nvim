@@ -11,6 +11,12 @@
 -- width. Closing the window only hides the view; the buffer (and the
 -- session behind it) survive for :OrcaReviewPanel to bring back. Only
 -- teardown(), at session close, destroys anything.
+--
+-- What the panel shows is a *view* over the session's entries (see
+-- orca/filter.lua): rows carry entry indices, and the last row — the one
+-- row that is not a file — reports what the hidden groups folded away and
+-- toggles them back. The count is always on screen, so a review never
+-- omits anything quietly.
 
 local M = {}
 
@@ -33,6 +39,7 @@ local function define_hl()
   vim.api.nvim_set_hl(0, 'OrcaPanelRenamed', { link = 'Changed', default = true })
   vim.api.nvim_set_hl(0, 'OrcaPanelCurrent', { link = 'CursorLine', default = true })
   vim.api.nvim_set_hl(0, 'OrcaPanelCount', { fg = '#c678dd', ctermfg = 176, default = true })
+  vim.api.nvim_set_hl(0, 'OrcaPanelHidden', { link = 'Comment', default = true })
 end
 
 -- One row: ` <status> *n <name>`. The *n comment count sits between the
@@ -52,41 +59,84 @@ local function entry_line(e, count, width)
   return (' %s%s %s'):format(e.status, counts_col, name)
 end
 
+-- The group breakdown, "tests" for one group and "4 tests, 2 generated"
+-- for several — the shape that stays readable either way.
+local function breakdown(view)
+  local names = vim.tbl_keys(view.groups)
+  table.sort(names)
+  if #names == 1 then return names[1] end
+  local parts = {}
+  for _, g in ipairs(names) do parts[#parts + 1] = ('%d %s'):format(view.groups[g], g) end
+  return table.concat(parts, ', ')
+end
+
+-- The summary row, present whenever a group claims anything at all. It
+-- states what is missing and what <CR> on it will do — in both states, so
+-- the toggle is discoverable from the panel alone and the hidden set is
+-- never a thing you have to already know about.
+function M.summary(view)
+  if view.hidden then
+    return ('%d file%s hidden (%s) — <CR> shows'):format(
+      view.n, view.n == 1 and '' or 's', breakdown(view))
+  end
+  return ('showing everything — <CR> hides %d (%s)'):format(view.n, breakdown(view))
+end
+
+-- The row showing entry `index`, or nil when the view folded it away.
+local function row_of(view, index)
+  for r, i in ipairs(view.rows) do
+    if i == index then return r end
+  end
+end
+
+-- How tall the panel wants to be: its rows, the summary one included.
+local function height(view)
+  return #view.rows + (view.n > 0 and 1 or 0)
+end
+
 -- Re-render everything: lines, status-letter highlights, the current-file
--- line mark, and the [n] comment counts. Cheap enough (a screenful of
--- short lines) that partial updates are not worth their bookkeeping.
-local function render(entries, index, counts)
+-- line mark, the [n] comment counts, and the summary row. Cheap enough (a
+-- screenful of short lines) that partial updates are not worth their
+-- bookkeeping.
+local function render(entries, index, counts, view)
   local buf = state.buf
   local max = 0
-  for _, e in ipairs(entries) do
-    max = math.max(max, counts and counts[e.path] or 0)
+  for _, i in ipairs(view.rows) do
+    max = math.max(max, counts and counts[entries[i].path] or 0)
   end
-  -- The count column sizes to the widest *n in the session.
+  -- The count column sizes to the widest *n on show.
   local width = max > 0 and #('*%d'):format(max) or 0
   local lines = {}
-  for i, e in ipairs(entries) do
-    lines[i] = entry_line(e, counts and counts[e.path] or 0, width)
+  for r, i in ipairs(view.rows) do
+    lines[r] = entry_line(entries[i], counts and counts[entries[i].path] or 0, width)
   end
+  local summary = view.n > 0 and (#lines + 1) or nil
+  if summary then lines[summary] = (' … %s'):format(M.summary(view)) end
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
   vim.api.nvim_buf_clear_namespace(buf, NS, 0, -1)
-  for i, e in ipairs(entries) do
-    vim.api.nvim_buf_set_extmark(buf, NS, i - 1, 1, {
+  for r, i in ipairs(view.rows) do
+    local e = entries[i]
+    vim.api.nvim_buf_set_extmark(buf, NS, r - 1, 1, {
       end_col = 2,
       hl_group = STATUS_HL[e.status] or 'OrcaPanelChanged',
     })
     local n = counts and counts[e.path]
     if n and n > 0 then
       -- ` X *n` — the token starts after space+letter+space (col 3).
-      vim.api.nvim_buf_set_extmark(buf, NS, i - 1, 3, {
+      vim.api.nvim_buf_set_extmark(buf, NS, r - 1, 3, {
         end_col = 3 + #('*%d'):format(n),
         hl_group = 'OrcaPanelCount',
       })
     end
   end
-  if index and index >= 1 and index <= #entries then
-    vim.api.nvim_buf_set_extmark(buf, NS, index - 1, 0, {
+  if summary then
+    vim.api.nvim_buf_set_extmark(buf, NS, summary - 1, 0, { line_hl_group = 'OrcaPanelHidden' })
+  end
+  local cur = row_of(view, index)
+  if cur then
+    vim.api.nvim_buf_set_extmark(buf, NS, cur - 1, 0, {
       line_hl_group = 'OrcaPanelCurrent',
     })
   end
@@ -123,7 +173,7 @@ end
 -- Create (or focus) the panel window and render. Returns the panel buffer
 -- — new or reused; the caller re-asserts its maps either way, and setting
 -- a map twice is idempotent.
-function M.open(entries, index, counts, title)
+function M.open(entries, index, counts, view, title)
   define_hl()
   local buf = ensure_buf()
   local win = M.win()
@@ -131,7 +181,7 @@ function M.open(entries, index, counts, title)
     -- noautocmd: :split briefly shows the current buffer in the new
     -- window, and a BufEnter for it would ripple through the session's
     -- navigation follower.
-    vim.cmd(('noautocmd botright %dsplit'):format(math.max(1, math.min(#entries, 10))))
+    vim.cmd(('noautocmd botright %dsplit'):format(math.max(1, math.min(height(view), 10))))
     win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(win, buf)
     for opt, val in pairs({
@@ -148,23 +198,22 @@ function M.open(entries, index, counts, title)
   else
     vim.api.nvim_set_current_win(win)
   end
-  render(entries, index, counts)
-  if index and index >= 1 and index <= #entries then
-    pcall(vim.api.nvim_win_set_cursor, win, { index, 0 })
-  end
+  render(entries, index, counts, view)
+  local cur = row_of(view, index)
+  if cur then pcall(vim.api.nvim_win_set_cursor, win, { cur, 0 }) end
   return buf
 end
 
 -- Re-render from session state; when the panel window is not focused, park
 -- its cursor on the current row too, so entering the panel always lands on
 -- the current file (the qf `idx` behavior, kept).
-function M.refresh(entries, index, counts)
+function M.refresh(entries, index, counts, view)
   if not M.buf() then return end
-  render(entries, index, counts)
+  render(entries, index, counts, view)
   local win = M.win()
-  if win and win ~= vim.api.nvim_get_current_win()
-    and index and index >= 1 and index <= #entries then
-    pcall(vim.api.nvim_win_set_cursor, win, { index, 0 })
+  local cur = row_of(view, index)
+  if win and win ~= vim.api.nvim_get_current_win() and cur then
+    pcall(vim.api.nvim_win_set_cursor, win, { cur, 0 })
   end
 end
 

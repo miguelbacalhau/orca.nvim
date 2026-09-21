@@ -9,11 +9,18 @@
 -- one artifact that outlives it is the review-notes file (orca/notes.lua) —
 -- line-anchored comments under .orca/review-notes/ that flow back into the
 -- orca run.
+--
+-- What the panel lists is a view over the session's entries, not the
+-- entries themselves (orca/filter.lua): named groups — tests by default —
+-- fold away behind the panel's summary row, while the entry list stays
+-- whole, so a hidden file still opens by :edit, still anchors comments,
+-- and still walks with the comment motions.
 
 local git = require('orca.git')
 local pairview = require('orca.diff')
 local notes = require('orca.notes')
 local panel = require('orca.panel')
+local filter = require('orca.filter')
 
 local M = {}
 
@@ -41,6 +48,7 @@ local DEFAULT_MAPPINGS = {
 local VALID_ACTIONS = {
   next = true, prev = true, open = true, comment = true, delete = true,
   comment_next = true, comment_prev = true, panel = true, close = true,
+  hidden = true,
 }
 
 -- Rows are { action, rhs-or-fn, desc [, x-mode rhs] } — comment also maps
@@ -54,6 +62,7 @@ local ACTIONS = {
   { 'comment_next', function() M.comment_next() end, 'orca: next comment' },
   { 'comment_prev', function() M.comment_prev() end, 'orca: previous comment' },
   { 'panel', function() M.panel() end, 'orca: toggle the review panel' },
+  { 'hidden', function() M.toggle_hidden() end, 'orca: show or hide the grouped files' },
   { 'close', function() M.close() end, 'orca: close review' },
 }
 
@@ -64,7 +73,7 @@ local function resolve_mappings()
   if type(user) == 'table' then
     for action, lhs in pairs(user) do
       if not VALID_ACTIONS[action] then
-        notify(('vim.g.orca_mappings: unknown action %q (valid: next, prev, open, comment, delete, comment_next, comment_prev, panel, close)')
+        notify(('vim.g.orca_mappings: unknown action %q (valid: next, prev, open, comment, delete, comment_next, comment_prev, panel, hidden, close)')
           :format(action), vim.log.levels.WARN)
       elseif lhs == false then
         maps[action] = nil
@@ -109,19 +118,65 @@ end
 local function attach_panel_maps(buf)
   attach_maps(buf)
   if session.maps.open then
-    buf_map(buf, session.maps.open, function() M.open(vim.fn.line('.')) end,
+    buf_map(buf, session.maps.open, function() M.open_row(vim.fn.line('.')) end,
       "orca: open this file's diff")
   end
 end
 
+-- Do sessions start with the groups folded away? They do: an orca run's
+-- diff is usually mostly tests, and the look-through before merge wants
+-- the source in front of it. vim.g.orca_review_hidden = false opts out.
+-- Resolved once per session, like the mappings.
+local function resolve_hidden()
+  local v = vim.g.orca_review_hidden
+  if v == nil then return true end
+  return v and true or false
+end
+
+-- The panel's view over session.entries: which entries it shows, in
+-- order, and what the groups claim. Three things pin an entry visible
+-- whatever its group says — a comment on it (you have already said
+-- something about this file), being the file the session is currently in
+-- (you are looking at it), and being the last one left. That last one is
+-- the only place the default overrides itself: hiding every file would
+-- open a review with nothing in it, so an all-tests branch shows
+-- everything and says so.
+local function recompute_view(counts)
+  counts = counts or notes.counts()
+  local classify = filter.classifier()
+  local rows, groups, n = {}, {}, 0
+  for i, e in ipairs(session.entries) do
+    local group
+    if i ~= session.index and (counts[e.path] or 0) == 0 then group = classify(e) end
+    if group then
+      groups[group] = (groups[group] or 0) + 1
+      n = n + 1
+    end
+    if not (group and session.hidden) then rows[#rows + 1] = i end
+  end
+  local blocked = session.hidden and #rows == 0
+  if blocked then
+    session.hidden = false
+    rows = {}
+    for i = 1, #session.entries do rows[i] = i end
+  end
+  session.view = { rows = rows, groups = groups, n = n, hidden = session.hidden,
+    blocked = blocked }
+  return blocked
+end
+
 local function refresh_panel()
   if not session then return end
-  panel.refresh(session.entries, session.index, notes.counts())
+  local counts = notes.counts()
+  recompute_view(counts)
+  panel.refresh(session.entries, session.index, counts, session.view)
 end
 
 -- Open (or focus) the panel window, re-rendered from session state.
 local function show_panel()
-  local buf = panel.open(session.entries, session.index, notes.counts(),
+  local counts = notes.counts()
+  recompute_view(counts)
+  local buf = panel.open(session.entries, session.index, counts, session.view,
     'OrcaReview ' .. session.range)
   attach_panel_maps(buf)
 end
@@ -248,6 +303,7 @@ function M.review(range)
   session = {
     entries = entries,
     index = 0,
+    hidden = resolve_hidden(),
     mergebase = mergebase,
     toplevel = toplevel,
     range = base .. '...' .. head,
@@ -285,10 +341,23 @@ function M.review(range)
     hints[#hints + 1] = (m.next or m.prev or ':OrcaReviewNext') .. ' moves'
   end
   hints[#hints + 1] = (m.comment or ':OrcaComment') .. ' comments a line'
-  notify(('%d file%s in %s%s%s'):format(#entries, #entries == 1 and '' or 's', session.range,
+  -- Hiding is never silent: when a group folded anything away, the count
+  -- and the way back are in the line that opens the session, whether or
+  -- not the `hidden` action is bound to a key.
+  local view = session.view
+  if view.n > 0 then
+    hints[#hints + 1] = ('%s %s them'):format(m.hidden or '<CR> on the … row',
+      view.hidden and 'shows' or ('hides ' .. view.n))
+  end
+  notify(('%d file%s in %s%s%s%s'):format(#entries, #entries == 1 and '' or 's', session.range,
+    view.hidden and (', %d hidden'):format(view.n) or '',
     loaded > 0 and (', %d comment%s loaded'):format(loaded, loaded == 1 and '' or 's') or '',
     #hints > 0 and (' — ' .. table.concat(hints, ', ')) or ''))
-  M.open(1)
+  if view.blocked then
+    notify(('every file in %s is in a hidden group — showing all %d')
+      :format(session.range, #entries))
+  end
+  M.open(view.rows[1])
 end
 
 -- Open the diff pair for the idx-th changed file.
@@ -338,27 +407,62 @@ function M.open(idx)
   if entry.binary then notify(entry.path .. ' is binary — opened without a diff') end
 end
 
--- Move count files forward/back (default 1), honoring the count contract
--- of the keys users bind here. At the edge, a polite message; a count that
--- would overshoot clamps to the edge (in M.open) instead of erroring.
-function M.next(count)
+-- Open the file on panel row `row`. The panel's rows are the view's, so
+-- row and entry index part ways the moment a group folds something away;
+-- the row past the last file is the summary row, whose <CR> toggles.
+function M.open_row(row)
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
-  if session.index >= #session.entries then
-    return notify('already at the last file')
-  end
-  M.open(session.index + (count or 1))
+  local idx = session.view.rows[row]
+  if idx then return M.open(idx) end
+  M.toggle_hidden()
 end
 
-function M.prev(count)
+-- Move count files forward/back (default 1) through the panel's view:
+-- what the groups folded away is not something the walk stops on. At the
+-- edge, a polite message; a count that would overshoot clamps to the edge
+-- instead of erroring.
+local function walk(dir, count)
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
-  if session.index <= 1 then
-    return notify('already at the first file')
+  local rows = session.view.rows
+  local pos
+  for r, i in ipairs(rows) do
+    if i == session.index then
+      pos = r
+      break
+    end
   end
-  M.open(session.index - (count or 1))
+  -- No position yet (nothing opened) — start at the near end.
+  if not pos then return M.open(rows[dir > 0 and 1 or #rows]) end
+  if dir > 0 and pos >= #rows then return notify('already at the last file') end
+  if dir < 0 and pos <= 1 then return notify('already at the first file') end
+  M.open(rows[math.max(1, math.min(pos + dir * (count or 1), #rows))])
+end
+
+function M.next(count) walk(1, count) end
+function M.prev(count) walk(-1, count) end
+
+-- The hidden-groups toggle: <CR> on the panel's summary row, the `hidden`
+-- mapping action, and this function for anyone driving orca from their own
+-- keymap layer. There is no command — like `open`, this is an action on
+-- the panel, and the row is always there to carry it.
+function M.toggle_hidden()
+  if not session then
+    return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
+  end
+  session.hidden = not session.hidden
+  refresh_panel()
+  local view = session.view
+  if view.blocked then
+    return notify(('every file in %s is in a hidden group — showing all %d')
+      :format(session.range, #session.entries))
+  end
+  if view.n == 0 then return notify('no files match the hidden groups in this review') end
+  notify(view.hidden and ('%d file%s hidden'):format(view.n, view.n == 1 and '' or 's')
+    or ('showing all %d files'):format(#session.entries))
 end
 
 -- The panel's focus-or-toggle ladder — one function behind both

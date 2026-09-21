@@ -42,6 +42,12 @@ printf 'new file\n' > "$SEED/c.txt"
 printf 'P1\000\t\bbinary2\n' > "$SEED/img.bin"
 git -C "$SEED" mv renamed-from.txt renamed-to.txt
 printf 'line1\nline2 CHANGED\nline3\nline4\n' > "$SEED/src/b.lua"
+# two files the default `tests` group claims — one by file name, one by
+# directory. Both sort after every visible file, so panel rows and entry
+# indices still coincide for the five files the panel shows.
+printf 'unit one\nunit two\n' > "$SEED/src/z_test.lua"
+mkdir "$SEED/tests"
+printf 'spec one\nspec two\n' > "$SEED/tests/b_spec.lua"
 git -C "$SEED" add -A
 git -C "$SEED" commit -qm change
 git -C "$SEED" checkout -q main # so clones of seed get origin/HEAD = main
@@ -95,7 +101,7 @@ NOUT=$(nvim --clean --headless -n --cmd "set rtp+=$ROOT" \
   "+lua local p = require('orca.panel'); local w = p.win(); print(('NORMAL %s %d'):format(vim.api.nvim_get_option_value('statusline', { win = w }), vim.api.nvim_buf_line_count(p.buf())))" \
   +qa! 2>&1)
 case "$NOUT" in
-  *"NORMAL OrcaReview main...HEAD 5"*) echo 'OK   normal checkout: bare review defaults to main...HEAD' ;;
+  *"NORMAL OrcaReview main...HEAD 6"*) echo 'OK   normal checkout: bare review defaults to main...HEAD' ;;
   *) printf '%s\n' "$NOUT"; echo 'normal-checkout default range failed' >&2; exit 1 ;;
 esac
 
