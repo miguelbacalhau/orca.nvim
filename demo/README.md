@@ -26,7 +26,10 @@ bottom (colored status letters, `R notes.txt → docs/usage.md`,
 file's diff pair open. The trunk-only README paragraph must *not* appear
 anywhere in the review.
 
-**Panel keys.** `j`/`k` + `<CR>` opens the file under the cursor. The
+**Panel keys.** `j`/`k` + `<CR>` opens the file under the cursor, and a
+double-click opens the row under the pointer — try it from inside a diff
+pair, and on the summary row once a group is hiding something. Clicking the
+panel's statusline, or empty space under the last row, must do nothing. The
 current file carries the full-line highlight, and entering the panel lands
 on it. `:OrcaReviewPanel` runs the ladder: focused → closes the window;
 hidden → reopens and focuses; visible but unfocused → focuses. Close the
@@ -55,7 +58,7 @@ yours. This is the reason the panel exists.
 a picker) — its pair assembles around you. Wander to an unchanged file
 inside a pair window — the pair collapses, the session lives.
 
-**Mappings.** Defaults bind only `<CR>` in the panel. To test the restore
+**Mappings.** Defaults bind only `open` in the panel (`<CR>` and `<2-LeftMouse>`). To test the restore
 snippet and opt-in keys, set before `:OrcaReview`:
 
 ```vim

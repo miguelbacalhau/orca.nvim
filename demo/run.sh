@@ -221,7 +221,7 @@ Sandbox: demo/sandbox (feature branch, wiped and rebuilt every run).
 Things to try, in order — the full walkthrough is in demo/README.md:
 
   :OrcaReview                     5 files in the panel, 2 comments loaded
-  <CR> / j / k in the panel       open a file's diff pair
+  <CR> / j / k / double-click     open a file's diff pair
   :OrcaReviewPanel                the ladder: focus it, close it, bring it back
   :OrcaComment                    comment a line on the right side; :w commits
   :OrcaCommentNext / Prev         walk comments across files

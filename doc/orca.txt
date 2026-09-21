@@ -138,7 +138,12 @@ a `*n` count between the status letter and the name — its column is
 reserved on comment-less rows so names stay aligned — updating live as
 comments are created, deleted, or loaded from an earlier sitting.
 
-<CR> on a line opens that file's diff pair and focuses it. Closing the
+<CR> on a line opens that file's diff pair and focuses it, and so does a
+double-click — on the line under the pointer, which is not always the line
+under the cursor: the first press of the double-click focuses the panel and
+moves the cursor there, so the click works from inside a diff pair too.
+A click on the panel's 'statusline', or past the last row into empty space
+(a hide-toggle routinely leaves some), opens nothing. Closing the
 panel window (|:q|, |CTRL-W_c|, a window-management plugin) hides the
 view; |:OrcaReviewPanel| brings it back, re-rendered from session state.
 The session's range shows in the panel window's 'statusline'.
@@ -286,12 +291,17 @@ Buffer-local only, set in the buffers the session owns (both diff sides and
 the panel) and removed when the session lets go of them. The commands above
 are the public API; map your own globals if you want them.
 
-One default ships bound:
+One action ships bound, on two keys:
 
         <CR>            (panel only) open this file's diff pair
+        <2-LeftMouse>   (panel only) open the clicked file's diff pair
 
-In an orca-owned buffer <CR> shadows nothing — the fugitive/oil precedent.
-Everything else ships unbound: orca never binds a key that doesn't already
+In an orca-owned buffer neither shadows anything — the fugitive/oil
+precedent for <CR>, and for the double-click the quickfix list the panel
+replaced, where <2-LeftMouse> was <CR>; the native double-click there
+(select the word under the pointer) is noise in a nofile list buffer.
+A double-click needs 'mouse' to include the mode, as it does by default;
+orca never sets it. Everything else ships unbound: orca never binds a key that doesn't already
 mean what orca makes it do, and no native key means "next reviewed file"
 or "comment this line" (`]q`/`[q` keep meaning the user's real
 quickfix-next inside session buffers). Restoring the old quickfix feel is
@@ -327,6 +337,19 @@ way to toggle): >
         vim.g.orca_mappings = { next = ']q', prev = '[q' }   -- the old keys
         vim.g.orca_mappings = false                          -- commands only
 <
+A value is one key or a list of them. `open` ships as `{ '<CR>',
+'<2-LeftMouse>' }`, so rewriting it says what open is — a plain string
+binds that key and no other: >
+
+        vim.g.orca_mappings = { open = '<CR>' }              -- keyboard only
+        vim.g.orca_mappings = { open = { '<CR>', '<LeftRelease>' } }
+<
+The second is single-click-opens, which is yours to ask for rather than a
+default: clicking the panel merely to focus or scroll it then opens a
+file, and the extra release leaves a double-click in visual mode. Any
+pointer key (a name containing mouse, release, or drag) takes its row from
+the pointer; everything else from the cursor.
+
                                                                   *orca.setup()*
 setup({opts}) is optional sugar over the same variable — `setup({mappings =
 ...})` assigns `vim.g.orca_mappings` and nothing else, so lazy.nvim's

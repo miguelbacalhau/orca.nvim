@@ -33,16 +33,20 @@ end
 
 -- Buffer-local convenience maps; the :Orca* commands are the public API.
 -- Set only in buffers the session owns, removed when it lets go.
--- vim.g.orca_mappings reshapes them: a table overrides per action (false
--- drops one), false wholesale drops them all. Resolved once per session.
--- Only `open` ships bound: <CR> in an orca-owned buffer shadows nothing
--- (the fugitive/oil precedent). Everything else ships unbound — orca never
--- binds a key that doesn't already mean what orca makes it do, and with no
--- orca quickfix list there is no native key left to upgrade (]q/[q would
--- shadow the user's real quickfix motion inside session buffers). The
--- commands and config keys remain.
+-- vim.g.orca_mappings reshapes them: a table overrides per action (a
+-- string, a list of keys for one action, or false to drop it), false
+-- wholesale drops them all. Resolved once per session.
+-- Only `open` ships bound: in an orca-owned buffer <CR> shadows nothing
+-- (the fugitive/oil precedent), and neither does a double-click — the
+-- panel replaced the quickfix list, where <2-LeftMouse> was <CR>, and in
+-- a nofile list buffer the native double-click (select the word under the
+-- pointer, in visual mode) is noise. Everything else ships unbound — orca
+-- never binds a key that doesn't already mean what orca makes it do, and
+-- with no orca quickfix list there is no native key left to upgrade (]q/[q
+-- would shadow the user's real quickfix motion inside session buffers).
+-- The commands and config keys remain.
 local DEFAULT_MAPPINGS = {
-  open = '<CR>', -- panel only
+  open = { '<CR>', '<2-LeftMouse>' }, -- panel only
 }
 
 local VALID_ACTIONS = {
@@ -66,23 +70,44 @@ local ACTIONS = {
   { 'close', function() M.close() end, 'orca: close review' },
 }
 
+-- One action, one or more keys: `open` is both <CR> and the double-click,
+-- and a user's plain string is the one-key case. Non-strings are dropped
+-- rather than handed to vim.keymap.set, which would error out of the
+-- session start; an empty list means the same as false.
+local function lhs_list(v)
+  if type(v) == 'string' then return { v } end
+  if type(v) ~= 'table' then return {} end
+  local out = {}
+  for _, lhs in ipairs(v) do
+    if type(lhs) == 'string' then out[#out + 1] = lhs end
+  end
+  return out
+end
+
 local function resolve_mappings()
   local user = vim.g.orca_mappings
-  if user == false then return {} end
-  local maps = vim.tbl_extend('force', {}, DEFAULT_MAPPINGS)
+  local maps = {}
+  if user == false then return maps end
+  for action, lhs in pairs(DEFAULT_MAPPINGS) do maps[action] = lhs_list(lhs) end
   if type(user) == 'table' then
     for action, lhs in pairs(user) do
       if not VALID_ACTIONS[action] then
         notify(('vim.g.orca_mappings: unknown action %q (valid: next, prev, open, comment, delete, comment_next, comment_prev, panel, hidden, close)')
           :format(action), vim.log.levels.WARN)
-      elseif lhs == false then
-        maps[action] = nil
       else
-        maps[action] = lhs
+        local keys = lhs == false and {} or lhs_list(lhs)
+        maps[action] = #keys > 0 and keys or nil
       end
     end
   end
   return maps
+end
+
+-- The key an action is announced by: the first one bound, which is the
+-- keyboard one — "<2-LeftMouse> opens a diff" is not a hint anybody needs.
+local function key_of(maps, action)
+  local keys = maps[action]
+  return keys and keys[1]
 end
 
 local function buf_map(buf, lhs, rhs, desc, mode)
@@ -93,8 +118,7 @@ end
 
 local function attach_maps(buf)
   for _, a in ipairs(ACTIONS) do
-    local lhs = session.maps[a[1]]
-    if lhs then
+    for _, lhs in ipairs(session.maps[a[1]] or {}) do
       buf_map(buf, lhs, a[2], a[3])
       if a[4] then buf_map(buf, lhs, a[4], a[3], 'x') end
     end
@@ -112,14 +136,44 @@ local function detach_maps(buf)
   session.mapped[buf] = nil
 end
 
+-- Pointer keys, which carry a position of their own. Release and drag are
+-- the same family under different names — someone binding `open` to
+-- <LeftRelease> wants single-click-opens, and that click lands where the
+-- pointer is, not where the cursor was.
+local function is_pointer(lhs)
+  local s = lhs:lower()
+  return (s:find('mouse') or s:find('release') or s:find('drag')) ~= nil
+end
+
+-- Open whatever the pointer is on. The cursor is no help here: a click on
+-- the panel's 'statusline' (the session's range) fires the map too with
+-- the cursor still parked wherever it was, and getmousepos() clamps a
+-- click past the last row onto it — after a hide-toggle the window is
+-- routinely taller than its rows, so that clamp would toggle the groups
+-- back on a click into empty space. Both cases are a no-op instead.
+local function open_click()
+  local win = panel.win()
+  local pos = vim.fn.getmousepos()
+  if not win or pos.winid ~= win or pos.line < 1 then return end
+  -- The panel never wraps, folds, or carries virtual lines, so the row
+  -- under the pointer is exactly topline + winrow - 1.
+  local top = vim.api.nvim_win_call(win, function() return vim.fn.line('w0') end)
+  if top + pos.winrow - 1 > vim.api.nvim_buf_line_count(panel.buf()) then return end
+  M.open_row(pos.line)
+end
+
 -- The panel buffer is orca's alone — no ftplugin re-runs, no last-writer
 -- mapping race, no list identity to check. Maps are set once per buffer
 -- (the buffer outlives its window, so reopening needs no re-assert).
 local function attach_panel_maps(buf)
   attach_maps(buf)
-  if session.maps.open then
-    buf_map(buf, session.maps.open, function() M.open_row(vim.fn.line('.')) end,
-      "orca: open this file's diff")
+  for _, lhs in ipairs(session.maps.open or {}) do
+    if is_pointer(lhs) then
+      buf_map(buf, lhs, open_click, "orca: open the clicked file's diff")
+    else
+      buf_map(buf, lhs, function() M.open_row(vim.fn.line('.')) end,
+        "orca: open this file's diff")
+    end
   end
 end
 
@@ -333,20 +387,22 @@ function M.review(range)
 
   local m = session.maps
   local hints = {}
-  if m.open then hints[#hints + 1] = m.open .. ' opens a diff' end
-  if m.next and m.prev then
-    hints[#hints + 1] = ('%s/%s move'):format(m.next, m.prev)
+  local open_key, next_key = key_of(m, 'open'), key_of(m, 'next')
+  local prev_key = key_of(m, 'prev')
+  if open_key then hints[#hints + 1] = open_key .. ' opens a diff' end
+  if next_key and prev_key then
+    hints[#hints + 1] = ('%s/%s move'):format(next_key, prev_key)
   else
     -- Unbound by default; naming the commands keeps them discoverable.
-    hints[#hints + 1] = (m.next or m.prev or ':OrcaReviewNext') .. ' moves'
+    hints[#hints + 1] = (next_key or prev_key or ':OrcaReviewNext') .. ' moves'
   end
-  hints[#hints + 1] = (m.comment or ':OrcaComment') .. ' comments a line'
+  hints[#hints + 1] = (key_of(m, 'comment') or ':OrcaComment') .. ' comments a line'
   -- Hiding is never silent: when a group folded anything away, the count
   -- and the way back are in the line that opens the session, whether or
   -- not the `hidden` action is bound to a key.
   local view = session.view
   if view.n > 0 then
-    hints[#hints + 1] = ('%s %s them'):format(m.hidden or '<CR> on the … row',
+    hints[#hints + 1] = ('%s %s them'):format(key_of(m, 'hidden') or '<CR> on the … row',
       view.hidden and 'shows' or ('hides ' .. view.n))
   end
   notify(('%d file%s in %s%s%s%s'):format(#entries, #entries == 1 and '' or 's', session.range,

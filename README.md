@@ -60,8 +60,10 @@ the list survives everything short of `:OrcaReviewClose`. Closing its window
 One line per file — colored status letter, per-file comment count (a purple
 `*2` between the status and the name, its column reserved so names stay
 aligned, updating live as you comment), path, `(binary)` marker, renames as
-`old → new` — with the current file marked full-line. `<CR>` on a line opens
-that file's diff pair. Highlight groups, all overridable: `OrcaPanelAdded`,
+`old → new` — with the current file marked full-line. `<CR>` or a double-click
+on a line opens that file's diff pair, from the panel or from inside a diff —
+the click lands where the pointer is, whatever the cursor was doing.
+Highlight groups, all overridable: `OrcaPanelAdded`,
 `OrcaPanelRemoved`, `OrcaPanelChanged`, `OrcaPanelRenamed`, `OrcaPanelCurrent`,
 `OrcaPanelCount`, `OrcaPanelHidden`.
 
@@ -145,9 +147,11 @@ base-version scratch with no working-tree anchor.
 
 ## Keymaps
 
-Buffer-local maps in session-owned buffers only. One key ships bound: `<CR>` in
-the panel opens the file under the cursor — in an orca-owned buffer it shadows
-nothing (the fugitive/oil precedent). Everything else ships unbound: orca never
+Buffer-local maps in session-owned buffers only. One action ships bound: `open`
+in the panel, as `<CR>` on the cursor's line and `<2-LeftMouse>` on the pointer's
+— in an orca-owned buffer neither shadows anything (the fugitive/oil precedent,
+and the quickfix list the panel replaced had the same double-click). Everything
+else ships unbound: orca never
 binds a key that doesn't already mean what orca makes it do, and no native key
 means "next reviewed file" or "comment this line". The commands are the API, and
 one line adds keys — to restore the old quickfix feel:
@@ -165,7 +169,17 @@ vim.g.orca_mappings = { comment = "<leader>rc", close = "<leader>rq" }
 `vim.g.orca_mappings` is read when a session starts: a table overrides per action
 (keys `next`, `prev`, `open`, `comment`, `delete`, `comment_next`, `comment_prev`,
 `panel`, `hidden`, `close`; `false` drops one map), or `false` wholesale for
-commands only. A `comment` binding maps both normal and visual mode; `delete`
+commands only. A value is one key or a list of them — `open` ships as
+`{ "<CR>", "<2-LeftMouse>" }`, so rewriting it says what open is:
+
+```lua
+vim.g.orca_mappings = { open = "<CR>" }                          -- keyboard only
+vim.g.orca_mappings = { open = { "<CR>", "<LeftRelease>" } }     -- single click opens
+```
+
+(single click is yours to opt into, not a default: it makes clicking the panel
+to focus or scroll it open a file, and it leaves a double-click in visual mode.)
+A `comment` binding maps both normal and visual mode; `delete`
 removes the comment on the cursor line; `panel` rides the `:OrcaReviewPanel`
 ladder; `hidden` toggles the hidden groups. Hunk motion inside
 a pair is native diff mode — `]c` / `[c` need no orca binding.

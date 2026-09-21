@@ -144,6 +144,24 @@ check(cur:find('c.txt', 1, true) ~= nil, '<CR> on entry 2 opens its pair, got ' 
 check(vim.wo.diff, 'entry 2 right window is in diff mode')
 check(panel_cur() == 2, 'current-file mark follows the open')
 
+-- `open` also ships on the double-click: the panel replaced the quickfix
+-- list, where <2-LeftMouse> was <CR>. A real click needs a UI attached
+-- (nvim_input_mouse is a no-op headless), so what this can check is that
+-- the map is there and that it takes its row from the pointer, not the
+-- cursor. With no pointer position at all — which is what a click on the
+-- panel's statusline reports, and it fires this map too — the handler must
+-- do nothing rather than open whatever the cursor happens to sit on.
+vim.api.nvim_set_current_win(panel_win())
+local click_map = vim.fn.maparg('<2-LeftMouse>', 'n', false, true)
+check(click_map.buffer == 1 and click_map.desc == "orca: open the clicked file's diff",
+  'double-click is bound in the panel, to the click handler')
+vim.api.nvim_win_set_cursor(panel_win(), { 1, 0 })
+local before_click = vim.api.nvim_buf_get_name(0)
+local click_ok = pcall(click_map.callback)
+check(click_ok and vim.api.nvim_buf_get_name(0) == before_click,
+  'a click with no position on a panel row opens nothing, got ' .. vim.api.nvim_buf_get_name(0))
+check(panel_cur() == 2, 'and leaves the current file where it was')
+
 -- Modified file: right side is the real working-tree buffer, left scratch.
 local bidx = idx_of('src/b%.lua')
 orca.open(bidx)
@@ -817,6 +835,42 @@ check(panel_win() ~= nil and vim.api.nvim_get_current_win() == panel_win(),
   'panel key reopens from a session buffer')
 orca.close()
 check(vim.fn.maparg(')f', 'n', false, true).buffer ~= 1, 'buffer-local maps removed at close')
+
+-- An action's value is one key or a list of them: `open` ships as <CR>
+-- plus the double-click, and rewriting it says what open is. A plain
+-- string is the one-key case — which is how a config written before the
+-- mouse binding existed keeps meaning exactly what it said.
+vim.g.orca_mappings = { open = { 'go', '<2-LeftMouse>' } }
+orca.review('')
+vim.api.nvim_set_current_win(panel_win())
+check(vim.fn.maparg('go', 'n', false, true).desc == "orca: open this file's diff"
+  and vim.fn.maparg('<2-LeftMouse>', 'n', false, true).buffer == 1,
+  'orca_mappings: a list binds every key in it')
+check(vim.fn.maparg('<CR>', 'n', false, true).desc == nil, 'and the default <CR> is gone')
+keys('3G')
+keys('go')
+check(vim.api.nvim_buf_get_name(0):find('img.bin', 1, true) ~= nil,
+  'the listed key opens the pair, got ' .. vim.api.nvim_buf_get_name(0))
+orca.close()
+check(vim.fn.maparg('<2-LeftMouse>', 'n', false, true).buffer ~= 1,
+  'every key in the list is removed at close')
+
+vim.g.orca_mappings = { open = '<CR>' }
+orca.review('')
+vim.api.nvim_set_current_win(panel_win())
+check(vim.fn.maparg('<CR>', 'n', false, true).desc == "orca: open this file's diff"
+  and vim.fn.maparg('<2-LeftMouse>', 'n', false, true).buffer ~= 1,
+  'orca_mappings: a string means that key and no other')
+orca.close()
+
+vim.g.orca_mappings = { open = false }
+orca.review('')
+vim.api.nvim_set_current_win(panel_win())
+check(vim.fn.maparg('<CR>', 'n', false, true).desc == nil
+  and vim.fn.maparg('<2-LeftMouse>', 'n', false, true).buffer ~= 1,
+  'orca_mappings: open = false drops the keyboard and the mouse together')
+orca.close()
+vim.g.orca_mappings = nil
 
 -- setup() is sugar over the same variable; false drops every map, and the
 -- BufEnter navigation follower still opens pairs without any keys.
