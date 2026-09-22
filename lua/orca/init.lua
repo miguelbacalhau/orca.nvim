@@ -339,14 +339,22 @@ local function ensure_panel()
   end
 end
 
+-- Hand the pair on screen back: its maps detached and `session.last_win`
+-- left pointing at the window it held, so the next pair lands where this one
+-- was. Clearing `session.pair` is the caller's — M.open lets go of the
+-- record here and then offers it to pairview.open as the one to take over.
+local function release_pair(pair)
+  session.last_win = pair.right_win
+  for _, buf in ipairs(pair.bufs) do detach_maps(buf) end
+end
+
 local function teardown_pair()
   local pair = session.pair
   if not pair then return end
   session.pair = nil
-  session.last_win = pair.right_win
   local was = session.navigating
   session.navigating = true
-  for _, buf in ipairs(pair.bufs) do detach_maps(buf) end
+  release_pair(pair)
   pairview.close(pair)
   session.navigating = was
 end
@@ -413,9 +421,17 @@ local function follow_navigation()
     -- and reopening it here would loop open → BufEnter → open.
     if idx == session.index and pair then return end
     session.last_win = vim.api.nvim_get_current_win()
-    -- Deferred one tick: this BufEnter may be firing mid-:close (focus
-    -- falling back into a changed file's window), and the pair's split is
-    -- illegal while another window is closing (E242).
+    -- A pair the entered file can take over rebuilds right now, in this
+    -- BufEnter: nothing splits, so none of the reasons to wait apply, and
+    -- waiting is visible — the deferred rebuild lets the screen draw the new
+    -- file beside the *previous* file's merge base first, one frame of a
+    -- diff against the wrong side.
+    if pairview.reusable(pair, session.entries[idx], session.last_win) then
+      return M.open(idx)
+    end
+    -- Otherwise deferred one tick: this BufEnter may be firing mid-:close
+    -- (focus falling back into a changed file's window), and the pair's
+    -- split is illegal while another window is closing (E242).
     local s = session
     vim.schedule(function()
       if session ~= s then return end
@@ -553,11 +569,25 @@ function M.open(idx)
   end
   idx = math.max(1, math.min(idx, #session.entries))
   session.navigating = true
-  teardown_pair()
   session.index = idx
   local entry = session.entries[idx]
 
-  local ok, pair, err = pcall(pairview.open, entry, session.mergebase, session.toplevel, pick_window())
+  -- The pair on screen is handed to the new one rather than torn down, when
+  -- the entry can take it over: swapping its two buffers is what keeps the
+  -- layout from reflowing — and the working-tree file from being re-read —
+  -- every time a jump lands in a changed file. A pair the new entry cannot
+  -- use (the user took one of its windows, or this entry is binary and wants
+  -- no split) comes down the old way first.
+  local old = session.pair
+  session.pair = nil
+  if old then release_pair(old) end
+  local win = pick_window()
+  if old and not pairview.reusable(old, entry, win) then
+    pairview.close(old)
+    old = nil
+  end
+
+  local ok, pair, err = pcall(pairview.open, entry, session.mergebase, session.toplevel, win, old)
   session.navigating = false
   if not ok then pair, err = nil, pair end
   if not pair then
@@ -578,14 +608,7 @@ function M.open(idx)
     vim.api.nvim_create_autocmd('BufWipeout', {
       group = AUGROUP,
       buffer = sbuf,
-      callback = function()
-        for _, key in ipairs({ 'left_win', 'right_win' }) do
-          local w = pair[key]
-          if w and vim.api.nvim_win_is_valid(w) then
-            vim.api.nvim_win_call(w, function() vim.cmd('diffoff') end)
-          end
-        end
-      end,
+      callback = function() pairview.diffoff(pair) end,
     })
   end
 

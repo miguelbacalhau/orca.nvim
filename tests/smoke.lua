@@ -375,6 +375,78 @@ orca.next()
 check(panel_cur() == before_idx + 1, ':OrcaReviewNext resumes the walk after collapse/reopen')
 check(count_diff_wins() == 2, 'walk resumed with a live diff pair')
 
+-- Wandering straight from one pair into another changed file — the LSP jump
+-- and the CTRL-O — must leave the new pair's highlighting its own. Neovim
+-- clears a window's 'diff' when a jump swaps its buffer, but leaves that
+-- buffer on the tab page's diff list; a pair torn down afterwards used to
+-- leave it there, and the next pair compared against the ghost too, which
+-- painted every line of the new file changed. The hunks themselves are the
+-- only assertion that catches it — the window flags all look right.
+local function diff_hl(lnum)
+  local id = vim.fn.diff_hlID(lnum, 1)
+  return id == 0 and '-' or vim.fn.synIDattr(id, 'name')
+end
+-- The merge-base side on screen: its window and the path it was cut from.
+local function left_side()
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local n = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w))
+    if n:find('^orca://') and n ~= 'orca://review' then return w, n end
+  end
+  return nil, ''
+end
+-- What a jump costs, counted: a pair taken over in place opens no window and
+-- closes none. Rebuilding it instead closed the merge-base split and
+-- reopened it, reflowing the layout to full width and back — the flicker.
+local churn = { WinNew = 0, WinClosed = 0 }
+local churn_au = vim.api.nvim_create_autocmd({ 'WinNew', 'WinClosed' }, {
+  callback = function(a) churn[a.event] = churn[a.event] + 1 end,
+})
+local function jump_to(path, side)
+  churn = { WinNew = 0, WinClosed = 0 }
+  vim.cmd('edit ' .. path)
+  drain(function()
+    local _, n = left_side()
+    return n:find(side, 1, true) and count_diff_wins() == 2
+  end)
+end
+orca.open(bidx) -- src/b.lua, from a pair already on screen
+local left_before = left_side()
+-- The working-tree side the jump lands on is the buffer the jump already
+-- put there. Opening the pair used to :edit it again — a reload, which
+-- throws the view away for nothing and refuses outright (E37) once there
+-- are unwritten changes in it. 'changedtick' is what tells the two apart:
+-- switching to a buffer leaves it alone, re-reading one bumps it.
+local b_tick = vim.api.nvim_buf_get_changedtick(vim.api.nvim_get_current_buf())
+jump_to('renamed-to.txt', 'renamed-from.txt') -- a rename with identical content: no hunks
+check(diff_hl(1) == '-',
+  'jump into a pure rename shows no hunk — no ghost buffer in the tab diff, got ' .. diff_hl(1))
+check(left_side() == left_before,
+  'the jump took the merge-base split over rather than rebuilding it')
+check(churn.WinNew == 0 and churn.WinClosed == 0,
+  ('no window opened or closed under the jump, got %d new / %d closed')
+    :format(churn.WinNew, churn.WinClosed))
+jump_to('src/b.lua', 'src/b.lua') -- and back out again
+check(diff_hl(1) == '-' and diff_hl(2) ~= '-' and diff_hl(3) == '-' and diff_hl(4) == 'DiffAdd',
+  ('jumping back marks only the real hunks, got %s %s %s %s')
+    :format(diff_hl(1), diff_hl(2), diff_hl(3), diff_hl(4)))
+check(vim.api.nvim_buf_get_changedtick(vim.api.nvim_get_current_buf()) == b_tick,
+  'the file the jump landed on is not re-read under it')
+-- What that re-read cost, beyond the view it threw away: the working-tree
+-- side is editable on purpose (fixing nits during review is the point), and
+-- re-reading a file with unwritten changes in it refuses — E37, and the pair
+-- never opened at all. Taking the buffer as it stands has nothing to refuse.
+vim.api.nvim_buf_set_lines(0, 0, 1, false, { 'line1 UNWRITTEN' })
+jump_to('c.txt', 'c.txt')
+vim.cmd('buffer ' .. vim.fn.bufnr('src/b.lua'))
+drain(function()
+  local _, n = left_side()
+  return n:find('src/b.lua', 1, true) and count_diff_wins() == 2
+end)
+check(vim.bo.modified and vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] == 'line1 UNWRITTEN',
+  'a pair opens over unwritten changes rather than refusing to re-read the file')
+vim.cmd('edit!') -- and the fixture goes back the way it was
+vim.api.nvim_del_autocmd(churn_au)
+
 -- Leaving a deleted-file pair must not mangle the layout: its right side
 -- is a scratch too, and wiping a displayed scratch closes its window —
 -- which left the panel as the last window standing, ballooned to fill the
