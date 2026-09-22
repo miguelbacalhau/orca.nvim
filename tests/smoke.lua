@@ -388,29 +388,118 @@ check(vim.api.nvim_win_get_height(panel_win()) == h_before,
 check(count_diff_wins() == 2 and #vim.api.nvim_tabpage_list_wins(0) == 3,
   'next pair opened in the surviving right window')
 
--- ==================== panel toggle ladder ====================
+-- ================= the pinned panel and its ladder =================
 
--- Closing the panel window hides the view; the session lives, and
--- :OrcaReviewPanel is the discoverable, always-alive way back (where
--- :colder was manual, position-dependent, and mortal).
+-- The panel is pinned for the session's duration: closing its window puts
+-- it straight back, re-rendered, without moving the cursor out of the file
+-- under review. A review that lost its map is one navigating blind.
 orca.open(1)
+orca.next() -- src/b.lua's pair; focus on the right side
+local before_win = vim.api.nvim_get_current_win()
+local before_buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_win_close(panel_win(), true)
-check(panel_win() == nil, 'closing the panel window hides the view')
-check(panel_buf() ~= nil, 'panel buffer survives its window')
+check(panel_win() == nil, 'the panel window is gone the instant it is closed')
+drain(function() return panel_win() ~= nil end)
+check(panel_win() ~= nil, 'pinned: the closed panel window comes back')
+check(vim.api.nvim_get_current_win() == before_win
+  and vim.api.nvim_get_current_buf() == before_buf,
+  'pinned: the panel returns without stealing focus')
+check(panel_cur() == 2, 'the returned panel is re-rendered from session state')
+
+-- :only is the same story through a different door — every other window
+-- goes, and the panel is back beside the survivor a tick later.
+vim.cmd('only')
+drain(function() return panel_win() ~= nil end)
+check(panel_win() ~= nil, 'pinned: the panel survives :only')
+
+-- A foreign buffer taking the panel's window never closes a window at all;
+-- the BufEnter follower catches that route.
+orca.open(bidx)
+local stolen = panel_win()
+vim.api.nvim_win_set_buf(stolen, vim.fn.bufadd('unchanged.txt'))
+drain(function() return panel_win() ~= nil end)
+check(panel_win() ~= nil, 'pinned: the panel comes back from a stolen window too')
+check(panel_win() ~= stolen, 'and in a window of its own, leaving the thief where it landed')
+
+-- The ladder's third rung under a pin is the round trip, not a close.
+orca.open(bidx)
+local diff_win = vim.api.nvim_get_current_win()
+vim.cmd('OrcaReviewPanel')
+check(vim.api.nvim_get_current_win() == panel_win(), 'ladder: unfocused → focus')
+check(vim.api.nvim_win_get_cursor(panel_win())[1] == panel_cur(),
+  'the focused panel parks the cursor on the current file')
+vim.cmd('OrcaReviewPanel')
+check(panel_win() ~= nil, 'ladder: focused → the panel stays open')
+check(vim.api.nvim_get_current_win() == diff_win,
+  'ladder: focused → back to the file under review')
+
+-- Opting out restores the closable panel: the third rung closes, and
+-- nothing brings it back but :OrcaReviewPanel.
+orca.close()
+vim.g.orca_panel_pinned = false
+orca.review('')
+check(panel_win() ~= nil, 'unpinned session still opens with a panel')
+vim.api.nvim_win_close(panel_win(), true)
+vim.wait(100)
+check(panel_win() == nil, 'unpinned: closing the panel window hides the view')
+check(panel_buf() ~= nil, 'unpinned: the panel buffer survives its window')
 orca.next() -- navigation keeps working with the panel hidden
 check(panel_cur() == 2, 'hidden panel keeps rendering session state')
 vim.cmd('OrcaReviewPanel')
 check(panel_win() ~= nil and vim.api.nvim_get_current_win() == panel_win(),
-  'ladder: hidden → open and focus')
-check(vim.api.nvim_win_get_cursor(panel_win())[1] == 2,
-  'reopened panel parks the cursor on the current file')
+  'unpinned ladder: hidden → open and focus')
 vim.cmd('OrcaReviewPanel')
-check(panel_win() == nil, 'ladder: focused → close the window')
-vim.cmd('OrcaReviewPanel') -- back open, focused
-vim.cmd('wincmd k')
-check(vim.api.nvim_get_current_win() ~= panel_win(), 'moved focus off the panel')
-vim.cmd('OrcaReviewPanel')
-check(vim.api.nvim_get_current_win() == panel_win(), 'ladder: visible but unfocused → focus')
+check(panel_win() == nil, 'unpinned ladder: focused → close the window')
+orca.close()
+vim.g.orca_panel_pinned = nil
+
+-- ==================== session-global navigation keys ====================
+
+-- The navigation verbs are mapped globally while a session lives, so they
+-- answer from buffers orca does not own — the whole point of a review you
+-- can walk while standing in a grep result or a file outside the diff. The
+-- key's previous global meaning is captured and handed back at close.
+-- What a key meant before the session, for the restore assertion below.
+-- Compared as a signature rather than deep-equal: a Lua-callback map holds
+-- a function value, and ]q/[q are Neovim's own :cnext/:cprevious defaults
+-- on 0.11+ and nothing at all before that — either way the test only cares
+-- that what comes back is what was there.
+local function map_sig(lhs)
+  local m = vim.fn.maparg(lhs, 'n', false, true)
+  return ('%s|%s|%s'):format(m.rhs or '', m.desc or '', m.buffer or '')
+end
+vim.keymap.set('n', ']q', '<Cmd>let g:orca_smoke_prev = 1<CR>', { desc = 'user map' })
+local sig_next, sig_prev = map_sig(']q'), map_sig('[q')
+
+vim.g.orca_mappings = { next = ']q', prev = '[q', comment = '<leader>rc' }
+orca.review('')
+orca.open(1)
+vim.cmd('edit unchanged.txt') -- a file that is not part of the review at all
+drain(function() return vim.api.nvim_buf_get_name(0):find('unchanged.txt', 1, true) end)
+check(vim.fn.maparg(']q', 'n', false, true).desc == 'orca: next file',
+  'orca took ]q globally for the session')
+check(vim.fn.maparg(']q', 'n', false, true).buffer == 0, 'globally, not in this buffer')
+-- ...while `comment` does not travel: it needs a changed file's
+-- working-tree line to anchor to, so it stays where it can act. (<leader>
+-- is \\ here — maparg does not expand the notation.)
+check(vim.fn.maparg('\\rc', 'n') == '',
+  'comment is not global: unmapped in a buffer outside the review')
+local cur_before = panel_cur()
+keys(']q')
+check(panel_cur() == cur_before + 1,
+  ']q walks the review from a buffer outside it, got ' .. tostring(panel_cur()))
+orca.open(bidx)
+check(vim.fn.maparg('\\rc', 'n', false, true).buffer == 1,
+  'comment is buffer-local in the working-tree side of a pair')
+orca.close()
+check(map_sig(']q') == sig_next,
+  'the user\'s own ]q is handed back at session close, got ' .. map_sig(']q'))
+check(map_sig('[q') == sig_prev,
+  '[q goes back to whatever it was, got ' .. map_sig('[q'))
+vim.keymap.del('n', ']q')
+vim.g.orca_mappings = nil
+
+orca.review('')
 
 -- Close: no orca buffers survive (panel included), diff off everywhere.
 orca.close()
@@ -756,7 +845,9 @@ vim.fn.delete(notes_path)
 vim.g.orca_mappings = { next = ']q', prev = '[q' }
 orca.review('')
 orca.open(1)
-check(vim.fn.maparg(']q', 'n', false, true).buffer == 1, 'restored ]q is buffer-local on the pair')
+check(vim.fn.maparg(']q', 'n', false, true).desc == 'orca: next file'
+  and vim.fn.maparg(']q', 'n', false, true).buffer == 0,
+  'restored ]q is one of the session\'s global maps')
 keys('3]q')
 check(panel_cur() == 4, '3]q moves three files, got ' .. tostring(panel_cur()))
 keys('9]q')
@@ -801,11 +892,14 @@ vim.g.orca_mappings = nil
 vim.g.orca_mappings = { next = ')f', comment = '<leader>v', delete = '<leader>x',
   panel = '<leader>p', comment_next = ')c' }
 orca.review('')
-check(vim.fn.maparg(')f', 'n', false, true).buffer == 1, 'orca_mappings: next bound to )f')
-check(vim.fn.maparg(']q', 'n', false, true).buffer ~= 1, 'orca_mappings: ]q stays unbound')
+check(vim.fn.maparg(')f', 'n', false, true).desc == 'orca: next file',
+  'orca_mappings: next bound to )f')
+check(vim.fn.maparg(']q', 'n', false, true).desc ~= 'orca: next file',
+  'orca_mappings: ]q stays unbound — orca took only what was configured')
 check(vim.fn.maparg('<leader>v', 'n', false, true).buffer == 1, 'orca_mappings: opt-in comment binding attaches')
 check(vim.fn.maparg('<leader>v', 'x', false, true).buffer == 1, 'orca_mappings: comment binding also maps visual mode')
-check(vim.fn.maparg(')c', 'n', false, true).buffer == 1, 'orca_mappings: opt-in comment_next binding attaches')
+check(vim.fn.maparg(')c', 'n', false, true).desc == 'orca: next comment',
+  'orca_mappings: opt-in comment_next binding attaches')
 -- and the configured key still opens the comment input (default mapleader
 -- is backslash, so <leader>v arrives as \v)
 orca.open(idx_of('src/b%.lua'))
@@ -825,16 +919,18 @@ check(vim.fn.maparg('<leader>x', 'n', false, true).buffer == 1,
 keys('\\x')
 check(vim.fn.filereadable(notes_path) == 0,
   'configured delete key removes the comment (empty file deleted)')
--- The panel action rides the same ladder as :OrcaReviewPanel.
+-- The panel action rides the same ladder as :OrcaReviewPanel, from
+-- wherever you are: it is one of the session's global maps.
+local from_win = vim.api.nvim_get_current_win()
 keys('\\p')
 check(vim.api.nvim_get_current_win() == panel_win(), 'panel key focuses the visible panel')
 keys('\\p')
-check(panel_win() == nil, 'panel key closes the focused panel')
-keys('\\p') -- focus fell back into a session buffer, which carries the map
-check(panel_win() ~= nil and vim.api.nvim_get_current_win() == panel_win(),
-  'panel key reopens from a session buffer')
+check(panel_win() ~= nil and vim.api.nvim_get_current_win() == from_win,
+  'panel key on the focused panel goes back to the file, panel still open')
 orca.close()
-check(vim.fn.maparg(')f', 'n', false, true).buffer ~= 1, 'buffer-local maps removed at close')
+check(vim.fn.maparg(')f', 'n', false, true).desc == nil, 'session maps removed at close')
+check(vim.fn.maparg('\\v', 'n', false, true).buffer ~= 1,
+  'and the buffer-local ones with them')
 
 -- An action's value is one key or a list of them: `open` ships as <CR>
 -- plus the double-click, and rewriting it says what open is. A plain
@@ -973,8 +1069,9 @@ vim.fn.delete(notes_path)
 vim.g.orca_mappings = { hidden = '<leader>h' }
 orca.review('')
 orca.open(idx_of('src/b%.lua'))
-check(vim.fn.maparg('<leader>h', 'n', false, true).buffer == 1,
-  'orca_mappings: hidden binds inside the diff pair too')
+check(vim.fn.maparg('<leader>h', 'n', false, true).desc
+  == 'orca: show or hide the grouped files',
+  'orca_mappings: hidden binds for the whole session, diff pair included')
 keys('\\h')
 check(#panel_lines() == 8, 'the hidden key shows them from inside a diff, got ' .. #panel_lines())
 keys('\\h')

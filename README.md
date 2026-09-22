@@ -38,7 +38,7 @@ checks the install and prescribes whichever path fits.
 |---|---|
 | `:OrcaReview [range]` | Start a session: `<base>...<head>` in the merge-base sense; bare `<base>` implies `...HEAD`; no argument defaults to `<trunk>...HEAD`. Opens the review panel, loads any existing review notes for the branch, and opens the first file's diff pair. |
 | `:OrcaReviewNext` / `:OrcaReviewPrev` | Move to the next/previous changed file. |
-| `:OrcaReviewPanel` | The panel's focus-or-toggle ladder: hidden → open and focus; visible but unfocused → focus; focused → close the window. |
+| `:OrcaReviewPanel` | The panel's focus ladder: not there → open and focus; there but unfocused → focus; focused → back to the file. The panel stays open either way. |
 | `:OrcaComment` | Create or edit the comment on the current line (visual mode: on the range). Opens a borderless float in place over the comment's virtual lines (a bottom split on Neovim 0.9) — `:w` commits, quitting without writing aborts, committing empty text deletes. |
 | `:OrcaCommentNext` / `:OrcaCommentPrev` | Jump to the next/previous review comment, crossing files in review order. |
 | `:OrcaCommentDelete` | Delete the comment under the cursor. |
@@ -54,8 +54,14 @@ The changed-file list lives in a buffer orca owns (`orca://review`), a full-widt
 strip at the bottom — not the quickfix list, which is shared territory: the verbs
 of reviewing (`:grep`, LSP references, test runners) all push new quickfix lists,
 and each one would evict the review. Nothing external writes into the panel, so
-the list survives everything short of `:OrcaReviewClose`. Closing its window
-(`:q`) only hides the view; `:OrcaReviewPanel` brings it back, re-rendered.
+the list survives everything short of `:OrcaReviewClose` — and so does its
+window. The panel is the review's map: what's left, what you've already said
+something about, where you are in the walk. A review that lost it is one
+navigating blind with nothing on screen saying so, so it's pinned open for
+the session. `:q`, `CTRL-W_c`, `:only`, a window-management plugin tidying
+up, a foreign buffer landing in its window — it comes straight back,
+re-rendered, without taking your cursor out of the file you were reading.
+`vim.g.orca_panel_pinned = false` gives you the old closable panel.
 
 One line per file — colored status letter, per-file comment count (a purple
 `*2` between the status and the name, its column reserved so names stay
@@ -83,7 +89,7 @@ That row is both the indicator and the control — `<CR>` on it toggles, and it
 stays in both states (inverted: `showing everything — <CR> hides 2`), so the
 hiding is never something you discover after merging. There is no command for
 it: like the panel's `<CR>`, this is an action on the panel. Bind a key that
-works from inside a diff pair too with
+works from anywhere in the session with
 `vim.g.orca_mappings = { hidden = "<leader>rh" }`, or call
 `require('orca').toggle_hidden()`.
 
@@ -147,7 +153,17 @@ base-version scratch with no working-tree anchor.
 
 ## Keymaps
 
-Buffer-local maps in session-owned buffers only. One action ships bound: `open`
+The session's navigation verbs — `next`, `prev`, `panel`, `hidden`, `close`,
+`comment_next`, `comment_prev` — are mapped **globally for as long as the
+session lives**: "which file is next" is a property of the review, not of the
+window you happen to be standing in, so they answer from a `:grep` result,
+`:help`, a terminal, a file that isn't in the diff at all — the way the
+commands always have. Whatever such a key meant before is captured and handed
+back at `:OrcaReviewClose`. The rest are buffer-local, in session-owned buffers
+only, because there they're the honest answer: `comment` and `delete` need a
+changed file's working-tree line to anchor to, and `open` is the panel's alone.
+
+One action ships bound: `open`
 in the panel, as `<CR>` on the cursor's line and `<2-LeftMouse>` on the pointer's
 — in an orca-owned buffer neither shadows anything (the fugitive/oil precedent,
 and the quickfix list the panel replaced had the same double-click). Everything
@@ -181,7 +197,7 @@ vim.g.orca_mappings = { open = { "<CR>", "<LeftRelease>" } }     -- single click
 to focus or scroll it open a file, and it leaves a double-click in visual mode.)
 A `comment` binding maps both normal and visual mode; `delete`
 removes the comment on the cursor line; `panel` rides the `:OrcaReviewPanel`
-ladder; `hidden` toggles the hidden groups. Hunk motion inside
+ladder; `hidden` toggles the hidden groups from anywhere. Hunk motion inside
 a pair is native diff mode — `]c` / `[c` need no orca binding.
 `require('orca').setup{ mappings = ... }` is optional sugar over the same variable,
 so lazy.nvim's `opts` works too.

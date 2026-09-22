@@ -58,7 +58,9 @@ COMMANDS                                                        *orca-commands*
                                                              *:OrcaReviewClose*
 :OrcaReviewClose
         End the session: review notes saved, diff mode off, the panel
-        destroyed, scratch buffers wiped, keymaps removed. Quitting Neovim
+        destroyed, scratch buffers wiped, keymaps removed — the session's
+        global ones handed back to whatever they meant before it started.
+        This is the only way to be rid of the panel. Quitting Neovim
         cleans up the same way (the only thing that persists is the notes
         file, and persisting is its job).
 
@@ -72,11 +74,14 @@ COMMANDS                                                        *orca-commands*
 
                                                              *:OrcaReviewPanel*
 :OrcaReviewPanel
-        The panel's focus-or-toggle ladder: hidden → open and focus it;
-        visible but unfocused → focus it; already focused → close its
-        window. Closing only hides the view — the session, and the panel's
-        content, live until |:OrcaReviewClose|. Also available as the
-        `panel` action in |vim.g.orca_mappings| (unbound by default).
+        The panel's focus ladder: not there → open and focus it; there but
+        unfocused → focus it; already focused → back to the file under
+        review. The panel stays open throughout — it is pinned for the
+        session (|orca-panel|) — so the key is a round trip, and pressing
+        it twice leaves you where you started. With
+        |vim.g.orca_panel_pinned| off, the third rung closes the window
+        instead. Also available as the `panel` action in
+        |vim.g.orca_mappings| (unbound by default).
 
                                                                  *:OrcaComment*
 :[range]OrcaComment
@@ -143,10 +148,25 @@ double-click — on the line under the pointer, which is not always the line
 under the cursor: the first press of the double-click focuses the panel and
 moves the cursor there, so the click works from inside a diff pair too.
 A click on the panel's 'statusline', or past the last row into empty space
-(a hide-toggle routinely leaves some), opens nothing. Closing the
-panel window (|:q|, |CTRL-W_c|, a window-management plugin) hides the
-view; |:OrcaReviewPanel| brings it back, re-rendered from session state.
-The session's range shows in the panel window's 'statusline'.
+(a hide-toggle routinely leaves some), opens nothing. The session's range
+shows in the panel window's 'statusline'.
+
+                                                     *vim.g.orca_panel_pinned*
+The panel is pinned open for as long as the session lives. It is the
+review's map — what is left, what you have already said something about,
+where you are in the walk — and a review that has lost it is one
+navigating blind, with nothing on screen saying so. So a window closing
+under it (|:q|, |CTRL-W_c|, |:only|, a window-management plugin) puts it
+straight back, re-rendered from session state and without taking your
+cursor out of the file you were reading; so does a foreign buffer landing
+in its window. |:OrcaReviewClose| is what ends it.
+
+Set the variable to `false` to get the old closable panel back — closing
+hides the view, the session and its content live on, and
+|:OrcaReviewPanel| is the way back: >
+
+        vim.g.orca_panel_pinned = false
+<
 
 What the panel lists is a view over the session's changed files, not all
 of them: named groups — tests by default — fold away behind the last row
@@ -176,9 +196,9 @@ That row is the indicator and the control: <CR> on it toggles, and it
 stays in both states (inverted — `showing everything — <CR> hides 2`), so
 the way back is never something you have to already know about. There is
 no command; like the panel's `open`, this is an action on the panel.
-`hidden` in |vim.g.orca_mappings| binds a key that also works from inside
-a diff pair, and `require('orca').toggle_hidden()` is the scriptable
-entry point.
+`hidden` in |vim.g.orca_mappings| binds a key that works from anywhere
+while the session lives, and `require('orca').toggle_hidden()` is the
+scriptable entry point.
 
 Hiding is a *view*, never a filter on the session. A hidden file is still
 a full entry: |:edit| opens its diff pair, |:OrcaComment| anchors to it,
@@ -287,9 +307,18 @@ comment's virtual lines), `OrcaCommentResolution` (orca's write-back).
 ==============================================================================
 KEYMAPS                                                          *orca-keymaps*
 
-Buffer-local only, set in the buffers the session owns (both diff sides and
-the panel) and removed when the session lets go of them. The commands above
-are the public API; map your own globals if you want them.
+The session's navigation verbs — `next`, `prev`, `panel`, `hidden`,
+`close`, `comment_next`, `comment_prev` — are mapped globally for as long
+as the session lives, because "which file is next" is a property of the
+review and not of the window you happen to be standing in: they answer
+from a |:grep| result, |:help|, a terminal, a file that is not in the diff
+at all, the way the commands above always have. Whatever such a key meant
+before is captured and handed back at |:OrcaReviewClose|.
+
+The rest are buffer-local, set in the buffers the session owns (both diff
+sides and the panel) and removed when it lets go of them, because there
+they are the honest answer: `comment` and `delete` need a changed file's
+working-tree line to anchor to, and `open` is the panel's alone.
 
 One action ships bound, on two keys:
 
@@ -304,8 +333,9 @@ A double-click needs 'mouse' to include the mode, as it does by default;
 orca never sets it. Everything else ships unbound: orca never binds a key that doesn't already
 mean what orca makes it do, and no native key means "next reviewed file"
 or "comment this line" (`]q`/`[q` keep meaning the user's real
-quickfix-next inside session buffers). Restoring the old quickfix feel is
-one line — counts work, `3]q` moves three files, clamped at the edge: >
+quickfix-next while a session is open). Restoring the old quickfix feel is
+one line — counts work, `3]q` moves three files, clamped at the edge, and
+|:cnext| goes back to meaning |:cnext| at |:OrcaReviewClose|: >
 
         vim.g.orca_mappings = { next = ']q', prev = '[q' }
 <
@@ -316,13 +346,12 @@ The rest stays available as commands; bind what you use: >
         vim.g.orca_mappings = { comment = '<leader>rc', close = '<leader>rq' }
 <
 A `comment` binding maps normal mode (cursor line) and visual mode (the
-selected range). A `delete` binding deletes the comment on the cursor line,
-same as |:OrcaCommentDelete|. A `panel` binding rides the
-|:OrcaReviewPanel| ladder; `comment_next`/`comment_prev` are
-|:OrcaCommentNext|/|:OrcaCommentPrev|. A `hidden` binding toggles the
-hidden groups from anywhere in the session (|orca-hidden|) — the one
-action with no command behind it, since the panel's summary row carries
-it.
+selected range), in the session's own buffers. A `delete` binding deletes
+the comment on the cursor line, same as |:OrcaCommentDelete|. A `panel`
+binding rides the |:OrcaReviewPanel| ladder; `comment_next`/`comment_prev`
+are |:OrcaCommentNext|/|:OrcaCommentPrev|. A `hidden` binding toggles the
+hidden groups from anywhere at all (|orca-hidden|) — the one action with
+no command behind it, since the panel's summary row carries it.
 
                                                           *vim.g.orca_mappings*
 `vim.g.orca_mappings` reshapes the maps, read when a session starts (order
@@ -369,8 +398,8 @@ Install with your plugin manager, like any other plugin. lazy.nvim: >
 
         { "miguelbacalhau/orca.nvim" }
 <
-No setup() call required, no dependencies — |orca-keymaps| and
-|orca-hidden| cover the only configuration. Any manager that installs
+No setup() call required, no dependencies — |orca-keymaps|, |orca-hidden|
+and |vim.g.orca_panel_pinned| cover the only configuration. Any manager that installs
 from GitHub works the same way; updates ride the manager's own update
 flow.
 

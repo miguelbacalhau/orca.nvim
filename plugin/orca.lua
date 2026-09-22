@@ -23,7 +23,7 @@ end, { desc = 'Open the previous changed file as a diff pair' })
 
 vim.api.nvim_create_user_command('OrcaReviewPanel', function()
   orca().panel()
-end, { desc = 'Review panel: open and focus it, focus it, or close it when already focused' })
+end, { desc = 'Review panel: open and focus it, focus it, or go back to the file when already focused' })
 
 vim.api.nvim_create_user_command('OrcaComment', function(opts)
   orca().comment(opts.line1, opts.line2)

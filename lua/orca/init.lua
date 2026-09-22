@@ -4,8 +4,11 @@
 --
 -- A session is the merge-base diff of <base>...<head>: changed files in an
 -- orca-owned panel (orca/panel.lua — a buffer nothing else can evict, where
--- the quickfix list was shared territory), one side-by-side diff pair open
--- at a time. Session state is module-local and dies with the session; the
+-- the quickfix list was shared territory), pinned open for as long as the
+-- session lives, with one side-by-side diff pair at a time beside it. The
+-- session's navigation keys are global for the same span, so the review
+-- answers from outside its own buffers too — a grep result, :help, a file
+-- that isn't in the diff. Session state is module-local and dies with it; the
 -- one artifact that outlives it is the review-notes file (orca/notes.lua) —
 -- line-anchored comments under .orca/review-notes/ that flow back into the
 -- orca run.
@@ -31,8 +34,10 @@ local function notify(msg, level)
   vim.notify('orca: ' .. msg, level or vim.log.levels.INFO)
 end
 
--- Buffer-local convenience maps; the :Orca* commands are the public API.
--- Set only in buffers the session owns, removed when it lets go.
+-- Convenience maps; the :Orca* commands are the public API. The session's
+-- navigation verbs are mapped globally for as long as it lives (see
+-- GLOBAL_ACTIONS below) and the line-anchored ones only in the buffers it
+-- owns; both go away when it lets go.
 -- vim.g.orca_mappings reshapes them: a table overrides per action (a
 -- string, a list of keys for one action, or false to drop it), false
 -- wholesale drops them all. Resolved once per session.
@@ -43,7 +48,7 @@ end
 -- pointer, in visual mode) is noise. Everything else ships unbound — orca
 -- never binds a key that doesn't already mean what orca makes it do, and
 -- with no orca quickfix list there is no native key left to upgrade (]q/[q
--- would shadow the user's real quickfix motion inside session buffers).
+-- would shadow the user's real quickfix motion for the whole session).
 -- The commands and config keys remain.
 local DEFAULT_MAPPINGS = {
   open = { '<CR>', '<2-LeftMouse>' }, -- panel only
@@ -53,6 +58,23 @@ local VALID_ACTIONS = {
   next = true, prev = true, open = true, comment = true, delete = true,
   comment_next = true, comment_prev = true, panel = true, close = true,
   hidden = true,
+}
+
+-- Actions that don't care which buffer you are in. These are mapped
+-- globally for the session's lifetime instead of in the buffers orca owns,
+-- because "which file is next" is a property of the review, not of the
+-- window you happen to be standing in: a grep result, :help, a terminal, a
+-- file outside the diff — the session's keys answer from all of them, the
+-- way the :Orca* commands always have. Whatever a key meant before is
+-- captured and handed back at :OrcaReviewClose.
+--
+-- The rest stay buffer-local, because there they are the honest answer:
+-- `comment`/`delete` need a changed file's working-tree line to anchor to,
+-- and `open` is the panel's alone — a global <CR> would shadow the one key
+-- nobody can spare.
+local GLOBAL_ACTIONS = {
+  next = true, prev = true, panel = true, hidden = true, close = true,
+  comment_next = true, comment_prev = true,
 }
 
 -- Rows are { action, rhs-or-fn, desc [, x-mode rhs] } — comment also maps
@@ -65,7 +87,7 @@ local ACTIONS = {
   { 'delete', function() M.comment_delete() end, 'orca: delete the comment on this line' },
   { 'comment_next', function() M.comment_next() end, 'orca: next comment' },
   { 'comment_prev', function() M.comment_prev() end, 'orca: previous comment' },
-  { 'panel', function() M.panel() end, 'orca: toggle the review panel' },
+  { 'panel', function() M.panel() end, 'orca: focus the review panel, or go back' },
   { 'hidden', function() M.toggle_hidden() end, 'orca: show or hide the grouped files' },
   { 'close', function() M.close() end, 'orca: close review' },
 }
@@ -118,11 +140,49 @@ end
 
 local function attach_maps(buf)
   for _, a in ipairs(ACTIONS) do
-    for _, lhs in ipairs(session.maps[a[1]] or {}) do
-      buf_map(buf, lhs, a[2], a[3])
-      if a[4] then buf_map(buf, lhs, a[4], a[3], 'x') end
+    if not GLOBAL_ACTIONS[a[1]] then
+      for _, lhs in ipairs(session.maps[a[1]] or {}) do
+        buf_map(buf, lhs, a[2], a[3])
+        if a[4] then buf_map(buf, lhs, a[4], a[3], 'x') end
+      end
     end
   end
+end
+
+-- The session's global maps, set once at :OrcaReview and undone at
+-- :OrcaReviewClose. maparg() reports the *current buffer's* mapping ahead
+-- of the global one, so what a key meant before is asked from inside an
+-- empty scratch buffer, where nothing is buffer-local — otherwise a review
+-- started from a buffer with an LSP map on the same key would hand that
+-- map back globally at close.
+local function attach_globals()
+  local probe = vim.api.nvim_create_buf(false, true)
+  local function previous(lhs)
+    local ok, prev = pcall(vim.api.nvim_buf_call, probe, function()
+      return vim.fn.maparg(lhs, 'n', false, true)
+    end)
+    if ok and type(prev) == 'table' and next(prev) ~= nil then return prev end
+    return false
+  end
+  for _, a in ipairs(ACTIONS) do
+    if GLOBAL_ACTIONS[a[1]] then
+      for _, lhs in ipairs(session.maps[a[1]] or {}) do
+        if session.globals[lhs] == nil then session.globals[lhs] = previous(lhs) end
+        vim.keymap.set('n', lhs, a[2], { desc = a[3] })
+      end
+    end
+  end
+  pcall(vim.api.nvim_buf_delete, probe, { force = true })
+end
+
+-- Hand every taken key back exactly as it was found: restored when it meant
+-- something, deleted when it meant nothing.
+local function detach_globals()
+  for lhs, prev in pairs(session.globals) do
+    pcall(vim.keymap.del, 'n', lhs)
+    if prev then pcall(vim.fn.mapset, 'n', 0, prev) end
+  end
+  session.globals = {}
 end
 
 local function detach_maps(buf)
@@ -175,6 +235,19 @@ local function attach_panel_maps(buf)
         "orca: open this file's diff")
     end
   end
+end
+
+-- Is the panel pinned open for the session? It is: the panel is the
+-- review's map — what is left, what you have already said something about,
+-- where you are in the walk — and a review that has lost it is one
+-- navigating blind, with nothing on screen saying so. So closing its window
+-- no longer hides it; the window comes straight back, and the way out is
+-- ending the session. vim.g.orca_panel_pinned = false restores the old
+-- closable panel for anyone who wants the rows back as screen space.
+local function resolve_pinned()
+  local v = vim.g.orca_panel_pinned
+  if v == nil then return true end
+  return v and true or false
 end
 
 -- Do sessions start with the groups folded away? They do: an orca run's
@@ -235,6 +308,37 @@ local function show_panel()
   attach_panel_maps(buf)
 end
 
+-- Put the pinned panel back, without taking focus from wherever the user
+-- is: a panel returning is something you notice at the edge of the screen,
+-- not with your cursor. The split is made from an ordinary window —
+-- :split from a float is a different operation, and a picker preview is a
+-- perfectly ordinary place to be standing when :only takes the panel out.
+-- nvim_win_call rather than a pair of nvim_set_current_win calls: it fires
+-- no WinEnter/BufEnter for the detour, so the navigation follower never
+-- sees a window the user never visited.
+local function ensure_panel()
+  if not session or not session.pinned or panel.win() then return end
+  local cur = vim.api.nvim_get_current_win()
+  local from = cur
+  if vim.api.nvim_win_get_config(from).relative ~= '' then
+    from = nil
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.api.nvim_win_get_config(w).relative == '' then
+        from = w
+        break
+      end
+    end
+    if not from then return end
+  end
+  local was = session.navigating
+  session.navigating = true
+  pcall(vim.api.nvim_win_call, from, show_panel)
+  session.navigating = was
+  if vim.api.nvim_win_is_valid(cur) and vim.api.nvim_get_current_win() ~= cur then
+    pcall(vim.api.nvim_set_current_win, cur)
+  end
+end
+
 local function teardown_pair()
   local pair = session.pair
   if not pair then return end
@@ -281,7 +385,14 @@ local function follow_navigation()
   -- Pickers preview into floats; entering one must not collapse anything.
   if vim.api.nvim_win_get_config(0).relative ~= '' then return end
   local buf = vim.api.nvim_get_current_buf()
+  -- Entering the panel's own buffer is the panel arriving, not leaving —
+  -- and it fires mid-open, before the window is recorded, so reasserting
+  -- here would build a second panel on top of the first.
   if buf == panel.buf() then return end
+  -- A foreign buffer landing in the panel's window takes the panel away
+  -- without ever closing a window, so WinClosed alone would miss it. The
+  -- check is two API calls on a hook that already runs on every BufEnter.
+  ensure_panel()
   local pair = session.pair
   if pair then
     for _, owned in ipairs({ pair.bufs, pair.scratch }) do
@@ -358,12 +469,14 @@ function M.review(range)
     entries = entries,
     index = 0,
     hidden = resolve_hidden(),
+    pinned = resolve_pinned(),
     mergebase = mergebase,
     toplevel = toplevel,
     range = base .. '...' .. head,
     mapped = {},
     by_path = {},
     maps = resolve_mappings(),
+    globals = {},
   }
   for i, e in ipairs(entries) do session.by_path[e.path] = i end
   vim.api.nvim_create_augroup(AUGROUP, { clear = true })
@@ -377,6 +490,22 @@ function M.review(range)
     callback = follow_navigation,
   })
 
+  -- The pinned panel's other half: a window closing under it — :q, CTRL-W_c,
+  -- :only, a window-management plugin tidying up — puts it straight back.
+  -- Deferred one tick because splitting while another window is closing is
+  -- illegal (E242), and guarded on the session still being this one, so the
+  -- close that ends the session never resurrects what it just destroyed.
+  vim.api.nvim_create_autocmd('WinClosed', {
+    group = AUGROUP,
+    callback = function(args)
+      local s = session
+      if not s or not s.pinned or tonumber(args.match) ~= panel.win() then return end
+      vim.schedule(function()
+        if session == s then ensure_panel() end
+      end)
+    end,
+  })
+
   -- The notes layer: existing comments for this branch load here, so
   -- multi-sitting reviews and orca's resolutions show up immediately.
   -- Every notes save refreshes the panel, keeping comment counts live.
@@ -384,6 +513,7 @@ function M.review(range)
     head = head, on_change = refresh_panel })
 
   show_panel()
+  attach_globals()
 
   local m = session.maps
   local hints = {}
@@ -521,10 +651,13 @@ function M.toggle_hidden()
     or ('showing all %d files'):format(#session.entries))
 end
 
--- The panel's focus-or-toggle ladder — one function behind both
--- :OrcaReviewPanel and the `panel` mapping action: hidden → open and
--- focus; visible but unfocused → focus; focused → close the window. The
--- session lives either way; reopening re-renders from session state.
+-- The panel's focus ladder — one function behind both :OrcaReviewPanel and
+-- the `panel` mapping action: not there → open and focus; there but
+-- unfocused → focus; focused → back to the diff. That last rung used to
+-- close the window, which a pinned panel has no use for: with the panel
+-- always on screen the round trip is what the key is for, and pressing it
+-- twice leaves you where you started. vim.g.orca_panel_pinned = false puts
+-- the close back.
 function M.panel()
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
@@ -534,8 +667,14 @@ function M.panel()
     show_panel()
   elseif vim.api.nvim_get_current_win() ~= win then
     vim.api.nvim_set_current_win(win)
-  else
+  elseif not session.pinned then
     panel.close()
+  else
+    -- Back to the file under review: the pair's working-tree side, else
+    -- whatever ordinary window pick_window() would put the next pair in.
+    local back = session.pair and session.pair.right_win
+    if not (back and vim.api.nvim_win_is_valid(back)) then back = pick_window() end
+    pcall(vim.api.nvim_set_current_win, back)
   end
 end
 
@@ -635,13 +774,18 @@ function M.comment_delete()
 end
 
 -- End the session: notes saved and their extmarks cleared, diff pair torn
--- down, panel destroyed, scratch buffers wiped, keymaps removed, augroup
+-- down, panel destroyed, scratch buffers wiped, keymaps removed (the
+-- session's global ones handed back to whatever they meant before), augroup
 -- cleared. The one survivor is the notes file — persisting is its job.
 function M.close()
   if not session then return end
+  -- First, so that nothing in the teardown below — a window closing, a
+  -- buffer being wiped — trips the pin and builds the panel back up.
+  session.pinned = false
   notes.stop()
   teardown_pair()
   for buf in pairs(session.mapped) do detach_maps(buf) end
+  detach_globals()
   panel.teardown()
   pcall(vim.api.nvim_del_augroup_by_name, AUGROUP)
   session = nil
