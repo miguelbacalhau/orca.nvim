@@ -4,7 +4,8 @@
 -- external writes into an orca-owned buffer, so the list survives
 -- everything short of :OrcaReviewClose. Owning the buffer also buys what
 -- the qf `text` column capped out on: highlighted status letters, a
--- full-line current-file mark, per-file comment counts as virt_text.
+-- full-line current-file mark, per-file comment counts, and each file's
+-- `+n -n` line counts held against the window's right edge.
 --
 -- One scratch buffer (orca://review), one window at most. The window is a
 -- bottom strip — the qf window's exact footprint, so diff pairs keep full
@@ -59,6 +60,25 @@ local function entry_line(e, count, width)
   return (' %s%s %s'):format(e.status, counts_col, name)
 end
 
+-- The `+n -n` line counts for one entry, as virt_text chunks. Both sides
+-- always show, `+0` and `-0` included: a file that only grows reads as
+-- `+100 -0`, and the zero is the statement — the eye scanning the column
+-- never has to work out whether a blank means nothing or means nothing
+-- shown. Only a binary file, where git counts no lines at all, returns
+-- nil and leaves the margin empty. Widths come from the widest token on
+-- show, so the two columns stack down the panel instead of ragging.
+local function diffstat(e, aw, dw)
+  if not (e.added or e.deleted) then return nil end
+  local function pad(tok, w) return (' '):rep(w - #tok) .. tok end
+  return {
+    { pad(('+%d'):format(e.added or 0), aw), 'OrcaPanelAdded' },
+    { ' ' },
+    { pad(('-%d'):format(e.deleted or 0), dw), 'OrcaPanelRemoved' },
+    -- A breath of padding off the window edge, mirroring the row's own.
+    { ' ' },
+  }
+end
+
 -- The group breakdown, "tests" for one group and "4 tests, 2 generated"
 -- for several — the shape that stays readable either way.
 local function breakdown(view)
@@ -100,9 +120,14 @@ end
 -- bookkeeping.
 local function render(entries, index, counts, view)
   local buf = state.buf
-  local max = 0
+  -- The count columns start at 2 — the width of `+0`, which every
+  -- non-binary row carries — and grow to the widest number on show.
+  local max, aw, dw = 0, 2, 2
   for _, i in ipairs(view.rows) do
-    max = math.max(max, counts and counts[entries[i].path] or 0)
+    local e = entries[i]
+    max = math.max(max, counts and counts[e.path] or 0)
+    if e.added then aw = math.max(aw, #('+%d'):format(e.added)) end
+    if e.deleted then dw = math.max(dw, #('-%d'):format(e.deleted)) end
   end
   -- The count column sizes to the widest *n on show.
   local width = max > 0 and #('*%d'):format(max) or 0
@@ -128,6 +153,20 @@ local function render(entries, index, counts, view)
       vim.api.nvim_buf_set_extmark(buf, NS, r - 1, 3, {
         end_col = 3 + #('*%d'):format(n),
         hl_group = 'OrcaPanelCount',
+      })
+    end
+    -- The line counts ride the window's right edge as virt_text rather
+    -- than buffer text: the panel is as wide as the window, which the
+    -- user resizes, and right_align re-places them on every redraw for
+    -- free. In a panel narrow enough for a name to reach them they cover
+    -- its tail — the full-width bottom strip makes that rare, and the
+    -- alternative is a name that pushes the counts off the screen.
+    local stat = diffstat(e, aw, dw)
+    if stat then
+      vim.api.nvim_buf_set_extmark(buf, NS, r - 1, 0, {
+        virt_text = stat,
+        virt_text_pos = 'right_align',
+        hl_mode = 'combine',
       })
     end
   end

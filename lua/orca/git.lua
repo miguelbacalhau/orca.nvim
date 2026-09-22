@@ -105,24 +105,30 @@ function M.merge_base(base, head)
 end
 
 -- One entry per file changed between the merge-base and head:
--- { status = 'M'|'A'|'D'|'R'|'C'|'T', path, old_path, binary }.
+-- { status = 'M'|'A'|'D'|'R'|'C'|'T', path, old_path, binary, added, deleted }.
 -- `path` is the current name, `old_path` the merge-base name (they differ
 -- only for renames/copies); both are relative to the repository root.
+-- `added`/`deleted` are the file's line counts, nil for a binary file (git
+-- counts no lines there).
 function M.changed_files(mergebase, head)
   local status_lines, err = git({ 'diff', '--name-status', '-M', mergebase, head })
   if not status_lines then return nil, err end
   -- Same diff, same options: numstat lists files in the same order, and
-  -- marks binary ones with "-<TAB>-" counts. Zip by index to detect them
-  -- without re-parsing rename paths.
+  -- carries their line counts — "-<TAB>-" for a binary one. Zip by index,
+  -- so neither rename paths nor quoted names need re-parsing here.
   local numstat_lines = git({ 'diff', '--numstat', '-M', mergebase, head }) or {}
   local entries = {}
   for i, line in ipairs(status_lines) do
     local fields = vim.split(line, '\t', { plain = true })
+    local added, deleted = (numstat_lines[i] or ''):match('^(%S+)\t(%S+)\t')
     entries[#entries + 1] = {
       status = fields[1]:sub(1, 1),
       old_path = fields[2],
       path = fields[#fields],
-      binary = (numstat_lines[i] or ''):match('^%-\t%-\t') ~= nil,
+      binary = added == '-',
+      -- tonumber('-') is nil, so a binary file simply has no counts.
+      added = tonumber(added),
+      deleted = tonumber(deleted),
     }
   end
   return entries

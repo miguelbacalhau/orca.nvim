@@ -81,6 +81,20 @@ local function count_hl_at(row)
   end
   return false
 end
+-- The `+n -n` line counts on a row: the right-aligned virt_text, as
+-- "<text>|<hl>,...", or nil when the row carries none.
+local function diffstat_at(row)
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(panel_buf(), PNS,
+    { row - 1, 0 }, { row - 1, -1 }, { details = true })) do
+    if m[4].virt_text and m[4].virt_text_pos == 'right_align' then
+      local parts = {}
+      for _, c in ipairs(m[4].virt_text) do
+        parts[#parts + 1] = ('%s|%s'):format(c[1], c[2] or '')
+      end
+      return table.concat(parts, ',')
+    end
+  end
+end
 local function panel_statusline()
   return vim.api.nvim_get_option_value('statusline', { win = panel_win() })
 end
@@ -115,6 +129,21 @@ check(status_hl(idx_of('a%.txt')) == 'OrcaPanelRemoved', 'D letter highlighted O
 check(status_hl(idx_of('c%.txt')) == 'OrcaPanelAdded', 'A letter highlighted OrcaPanelAdded')
 check(status_hl(idx_of('renamed')) == 'OrcaPanelRenamed', 'R letter highlighted OrcaPanelRenamed')
 check(status_hl(idx_of('src/b%.lua')) == 'OrcaPanelChanged', 'M letter highlighted OrcaPanelChanged')
+
+-- Line counts ride the window's right edge, one column per side sized to
+-- the widest on show (+2/-1 here, so two characters each), added in
+-- OrcaPanelAdded and deleted in OrcaPanelRemoved.
+check(diffstat_at(idx_of('src/b%.lua')) == '+2|OrcaPanelAdded, |,-1|OrcaPanelRemoved, |',
+  'modified file shows +2 -1, got: ' .. tostring(diffstat_at(idx_of('src/b%.lua'))))
+-- Both sides always show: a one-sided change states its zero.
+check(diffstat_at(idx_of('c%.txt')) == '+1|OrcaPanelAdded, |,-0|OrcaPanelRemoved, |',
+  'added file shows +1 -0, got: ' .. tostring(diffstat_at(idx_of('c%.txt'))))
+check(diffstat_at(idx_of('a%.txt')) == '+0|OrcaPanelAdded, |,-1|OrcaPanelRemoved, |',
+  'deleted file shows +0 -1, got: ' .. tostring(diffstat_at(idx_of('a%.txt'))))
+check(diffstat_at(idx_of('renamed')) == '+0|OrcaPanelAdded, |,-0|OrcaPanelRemoved, |',
+  'pure rename shows +0 -0, got: ' .. tostring(diffstat_at(idx_of('renamed'))))
+check(diffstat_at(idx_of('img%.bin')) == nil, 'binary file shows no line counts')
+check(diffstat_at(6) == nil, 'the summary row carries no line counts')
 
 -- Review auto-opens the first file (deleted a.txt): both sides scratch, diff on.
 local wins = vim.api.nvim_tabpage_list_wins(0)

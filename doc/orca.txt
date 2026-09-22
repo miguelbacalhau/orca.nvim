@@ -146,12 +146,22 @@ survives everything short of |:OrcaReviewClose|; a foreign quickfix list
 mid-session changes nothing.
 
 One line per file: highlighted status letter, comment count, path
-(renames as `old → new`), a `(binary)` marker where it applies. The
-current file carries a full-line highlight and the panel's parked cursor,
-so entering the panel always lands on it. Files with review comments show
-a `*n` count between the status letter and the name — its column is
+(renames as `old → new`), a `(binary)` marker where it applies, and the
+file's `+n -n` line counts against the window's right edge. The current
+file carries a full-line highlight and the panel's parked cursor, so
+entering the panel always lands on it. Files with review comments show a
+`*n` count between the status letter and the name — its column is
 reserved on comment-less rows so names stay aligned — updating live as
 comments are created, deleted, or loaded from an earlier sitting.
+
+The line counts are `git diff --numstat`'s, so they read exactly as
+|:OrcaReview|'s range does; their two columns size to the widest on show,
+so the numbers stack down the panel. Both sides always show — a file that
+only grows reads `+100 -0`, and the zero is the statement, so a blank in
+the column never has to be told apart from a nothing. Only a binary file,
+where git counts no lines at all, shows no numbers. They are held against
+the edge by virtual text, so in a panel narrow enough for a path to reach
+them they cover its tail rather than being pushed off the screen.
 
 <CR> on a line opens that file's diff pair and focuses it, and so does a
 double-click — on the line under the pointer, which is not always the line
@@ -185,8 +195,9 @@ file's position in the diff part ways as soon as something is folded.
 
 Highlights, all with sensible defaults you can override:
 `OrcaPanelAdded`, `OrcaPanelRemoved`, `OrcaPanelChanged`,
-`OrcaPanelRenamed` (the status letters — linked to the builtin |hl-Added|
-/ |hl-Removed| / |hl-Changed| groups), `OrcaPanelCurrent` (the current
+`OrcaPanelRenamed` (the status letters, and — for the first two — the
+`+n` and `-n` line counts; linked to the builtin |hl-Added| /
+|hl-Removed| / |hl-Changed| groups), `OrcaPanelCurrent` (the current
 file's line, linked to |hl-CursorLine|), `OrcaPanelCount` (the `*n`
 comment counts, purple by default), `OrcaPanelHidden` (the summary row,
 linked to |hl-Comment|).

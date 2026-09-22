@@ -66,7 +66,8 @@ re-rendered, without taking your cursor out of the file you were reading.
 One line per file — colored status letter, per-file comment count (a purple
 `*2` between the status and the name, its column reserved so names stay
 aligned, updating live as you comment), path, `(binary)` marker, renames as
-`old → new` — with the current file marked full-line. `<CR>` or a double-click
+`old → new`, and the file's `+18 -4` line counts held against the window's
+right edge — with the current file marked full-line. `<CR>` or a double-click
 on a line opens that file's diff pair, from the panel or from inside a diff —
 the click lands where the pointer is, whatever the cursor was doing.
 Highlight groups, all overridable: `OrcaPanelAdded`,
