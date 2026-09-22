@@ -451,7 +451,7 @@ local function float_open(buf, from, anchor, row, col)
       pcall(vim.api.nvim_del_autocmd, scroll)
       if not state then return end
       state.editing = nil
-      if state.input == win then state.input = nil end
+      if state.input == win then state.input, state.input_anchor = nil, nil end
       if temp then pcall(vim.api.nvim_buf_del_extmark, anchor.buf, NS, temp) end
       if existing then
         -- Restore the real virt_lines — but only if the comment still
@@ -505,6 +505,10 @@ local function input(title, prefill, anchor, on_submit)
   vim.bo[buf].modified = false
   if row then win = float_open(buf, from, anchor, row, col) end
   state.input = win
+  -- Where the editor hangs, for M.focus_input's reveal: a float's position
+  -- is `from`'s scroll, and it hides itself when the anchor scrolls out of
+  -- view. The split fallback has no such geometry.
+  state.input_anchor = row and { win = from, buf = anchor.buf, line = anchor.line } or nil
   vim.api.nvim_create_autocmd('BufWriteCmd', {
     buffer = buf,
     callback = function()
@@ -520,6 +524,52 @@ local function input(title, prefill, anchor, on_submit)
       on_submit(lines)
     end,
   })
+end
+
+-- Is an editor open on words nobody has committed yet? The buffer's own
+-- 'modified' is the answer: prefill lands unmodified, :w clears it again.
+-- The session's file changes ask before they tear the anchor's pair down.
+function M.input_pending()
+  local win = state and state.input
+  if not (win and vim.api.nvim_win_is_valid(win)) then return false end
+  return vim.bo[vim.api.nvim_win_get_buf(win)].modified
+end
+
+-- Close the open editor, abandoning it — the same route as quitting its
+-- window, down to the WinClosed restoration. No-op when none is open.
+function M.close_input()
+  local win = state and state.input
+  if win and vim.api.nvim_win_is_valid(win) then
+    pcall(vim.api.nvim_win_close, win, true)
+  end
+end
+
+-- Put the cursor back in the open editor, bringing it on screen first: the
+-- float hides when its anchor scrolls away, and being sent to a window
+-- nobody can see is worse than not being sent at all. Moving the cursor to
+-- the anchor is what scrolls it back — the float's position follows.
+-- False when there is no editor to go to.
+function M.focus_input()
+  local win = state and state.input
+  if not (win and vim.api.nvim_win_is_valid(win)) then return false end
+  -- Only when that window still shows the anchored file: one the user has
+  -- since :edited something else into is not the gap's window any more, and
+  -- scrolling it to a line number that now means something else helps
+  -- nobody. The editor still takes the cursor, wherever it is hanging.
+  local a = state.input_anchor
+  if a and vim.api.nvim_win_is_valid(a.win) and vim.api.nvim_win_get_buf(a.win) == a.buf then
+    vim.api.nvim_set_current_win(a.win)
+    local last = vim.api.nvim_buf_line_count(a.buf)
+    pcall(vim.api.nvim_win_set_cursor, a.win, { math.min(a.line, last), 0 })
+    local r, c = float_pos(a.win, a.line)
+    if r then
+      vim.api.nvim_win_set_config(win, { relative = 'editor', row = r, col = c, hide = false })
+    end
+  end
+  if not vim.api.nvim_win_get_config(win).hide then
+    pcall(vim.api.nvim_set_current_win, win)
+  end
+  return true
 end
 
 -- Create the comment anchored at [line, line2] of path in buf, or edit the
@@ -608,9 +658,7 @@ function M.stop()
   M.save()
   -- Close the input first: a float's WinClosed restoration re-places
   -- extmarks, which must happen before the unplace sweep, not after it.
-  if state.input and vim.api.nvim_win_is_valid(state.input) then
-    pcall(vim.api.nvim_win_close, state.input, true)
-  end
+  M.close_input()
   for _, c in ipairs(state.comments) do unplace(c) end
   pcall(vim.api.nvim_del_augroup_by_name, 'orca-notes')
   state = nil

@@ -562,11 +562,32 @@ function M.review(range)
   M.open(view.rows[1])
 end
 
+-- An open comment editor and the file under it are one thing: the editor
+-- hangs in an extmark gap in that file's buffer, at a screen position that
+-- window's scroll decides, and the pair it floats over is about to be torn
+-- down. So every file change resolves it first — a leftover editor over the
+-- next file is a window with no gap under it, still holding the slot the
+-- next :OrcaComment wants. An editor nobody typed into just gets out of the
+-- way; one holding unwritten words keeps the keystroke, which goes to
+-- revealing it instead: nobody presses "next file" meaning "throw that
+-- away". Returns true when the caller must stand down.
+local function editor_holds_the_keystroke()
+  if not notes.input_pending() then
+    notes.close_input()
+    return false
+  end
+  notes.focus_input()
+  notify('the comment is unwritten — :w commits it, :q throws it away',
+    vim.log.levels.WARN)
+  return true
+end
+
 -- Open the diff pair for the idx-th changed file.
 function M.open(idx)
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
+  if editor_holds_the_keystroke() then return end
   idx = math.max(1, math.min(idx, #session.entries))
   session.navigating = true
   session.index = idx
@@ -709,6 +730,9 @@ local function comment_walk(dir)
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
+  -- Checked here too, not just in M.open: this walk moves the cursor after
+  -- the file change, and a refused change must not leave it doing that.
+  if editor_holds_the_keystroke() then return end
   local locs = {}
   for _, l in ipairs(notes.locations()) do
     l.fidx = session.by_path[l.path]

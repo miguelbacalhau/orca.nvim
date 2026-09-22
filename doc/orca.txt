@@ -101,6 +101,16 @@ COMMANDS                                                        *orca-commands*
         — a crash loses nothing. (On Neovim 0.9 the input is a small
         scratch split at the bottom instead; same contract.)
 
+        The editor belongs to the file under it: the gap it hangs in is
+        an extmark in that buffer, and where it sits on screen is that
+        window's scroll. So the session's file changes — |:OrcaReviewNext|,
+        the panel, the comment motions, a changed file entered by any
+        other route — resolve it before tearing the pair down. Untouched,
+        it closes and the move goes through; holding text you haven't
+        committed, it keeps the keystroke instead: the cursor goes back to
+        the editor (scrolled into view if the anchor had drifted off it)
+        and nothing moves until you `:w` or `:q`.
+
         Comments anchor to the working-tree (right) side of the pair
         only. The left buffer is a base-version scratch; a comment there
         ("this deletion was wrong") has no stable working-tree anchor and

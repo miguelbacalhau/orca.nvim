@@ -847,12 +847,77 @@ vim.api.nvim_win_set_cursor(0, { 2, 0 })
 vim.cmd('OrcaComment')
 check(vim.api.nvim_win_get_config(0).relative == '', 'forced fallback opens a split, not a float')
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'split text' })
+-- The keystroke guard is the editor's, not the float's: the fallback split
+-- holds a file change the same way.
+local split_win = vim.api.nvim_get_current_win()
+orca.prev()
+check(vim.api.nvim_get_current_win() == split_win,
+  'the split fallback holds the next-file key too')
 vim.cmd('write')
 drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
 data = read_notes()
 check(data and data.comments[1].text == 'split text', 'split fallback still commits')
 orca.close()
 require('orca.notes').float_input = true
+vim.fn.delete(notes_path)
+
+-- ============ a file change with the editor open (v2.3) ============
+
+-- The comment editor is glued to the file under it: the gap it floats in
+-- is an extmark in that buffer, and its screen position is that window's
+-- scroll. A next-file key pressed mid-comment used to leave it hanging
+-- over the next file — still open, still owning state.input, still
+-- anchored to a pair that had been torn down under it.
+orca.review('')
+local navidx = idx_of('c%.txt')
+orca.open(navidx)
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+vim.cmd('OrcaComment')
+local nav_win = vim.api.nvim_get_current_win()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'mid sentence' })
+orca.next()
+check(vim.api.nvim_win_is_valid(nav_win) and vim.api.nvim_get_current_win() == nav_win,
+  'unwritten text: the next-file key leaves you in the editor')
+check(panel_cur() == navidx,
+  'and the review stays on the file, row ' .. tostring(panel_cur()))
+
+-- Committing releases it: the same key now walks.
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+orca.next()
+check(panel_cur() == navidx + 1,
+  'once written, the walk goes through, row ' .. tostring(panel_cur()))
+
+-- An editor with nothing typed into it is not words worth keeping: it
+-- closes and the walk continues.
+orca.open(navidx)
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+vim.cmd('OrcaComment')
+nav_win = vim.api.nvim_get_current_win()
+orca.next()
+check(not vim.api.nvim_win_is_valid(nav_win), 'an untouched editor closes on the file change')
+check(panel_cur() == navidx + 1, 'and the walk goes through, row ' .. tostring(panel_cur()))
+
+-- The same for a comment that does not exist yet: its temporary mark goes
+-- with it, leaving the file as clean as if it had been :q'd.
+orca.open(idx_of('src/b%.lua'))
+local nav_src = vim.api.nvim_get_current_buf()
+vim.api.nvim_win_set_cursor(0, { 3, 0 })
+vim.cmd('OrcaComment')
+nav_win = vim.api.nvim_get_current_win()
+orca.prev()
+check(not vim.api.nvim_win_is_valid(nav_win), 'an untouched new comment closes too')
+check(#vim.api.nvim_buf_get_extmarks(nav_src, NS, 0, -1, {}) == 0,
+  'and its temporary mark goes with it')
+
+-- Nothing of the abandoned editor is left holding the slot: the next
+-- :OrcaComment is the new file's, not a jump back into the old one.
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+vim.cmd('OrcaComment')
+check(vim.api.nvim_buf_get_name(0):find('orca://comment/renamed%-to') ~= nil,
+  'the next comment belongs to the new file, got ' .. vim.api.nvim_buf_get_name(0))
+vim.cmd('quit')
+orca.close()
 vim.fn.delete(notes_path)
 
 -- ================= comment navigation: review-wide =================
