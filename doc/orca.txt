@@ -256,7 +256,9 @@ A group is a list of globs, where the `/` decides what gets matched:
         `/tests/`         leading slash     anchored at the repo root
 
 `*` stops at a separator, `**` crosses it, `?` is one non-separator
-character; everything else is literal. A rename folds away only when both
+character; `**/` matches zero or more directories, so `spec/**/*.rb`
+takes `spec/a_spec.rb` as well as `spec/x/a_spec.rb`. Everything else is
+literal. A rename folds away only when both
 of its names match — a file moving out of `tests/` is exactly the change
 you want in front of you.
 

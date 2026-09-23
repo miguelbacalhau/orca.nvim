@@ -1433,6 +1433,26 @@ check(pointed:find(root .. '/other-wt', 1, true) ~= nil,
   'and one checked out elsewhere is pointed at its worktree, got: ' .. pointed)
 vim.fn.system({ 'git', 'worktree', 'remove', '--force', root .. '/other-wt' })
 
+-- ==================== glob matching ====================
+
+-- '**/' is zero or more directories. It used to compile to '.*/', which
+-- demands at least one, so spec/**/*.rb passed over spec/a_spec.rb.
+local filter = require('orca.filter')
+local function claims(glob, path)
+  return filter.classifier({ g = { glob } })({ path = path }) == 'g'
+end
+check(claims('spec/**/*.rb', 'spec/a_spec.rb') and claims('spec/**/*.rb', 'spec/x/a_spec.rb')
+  and claims('spec/**/*.rb', 'spec/x/y/a_spec.rb'),
+  "spec/**/*.rb claims spec files at any depth, the top one included")
+check(not claims('spec/**/*.rb', 'lib/spec.rb') and not claims('spec/**/*.rb', 'spec/a_spec.lua'),
+  'and nothing outside spec/')
+check(claims('/**/gen.go', 'gen.go') and claims('/**/gen.go', 'a/gen.go')
+  and claims('a/**/b/**/c', 'a/b/c') and claims('a/**/b/**/c', 'a/x/b/y/c')
+  and not claims('a/**/b/**/c', 'a/x/c'),
+  "every '**/' may match nothing, anchored or not")
+check(claims('gen/**', 'gen/x/y.go') and not claims('gen/**', 'gen'),
+  "a trailing '**' is unchanged")
+
 -- ==================== git plumbing ====================
 
 -- git writes warnings to stderr on a run that succeeds — here, rename

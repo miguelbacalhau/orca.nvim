@@ -19,7 +19,8 @@
 --   /tests/       leading slash    anchored at the repository root
 --
 -- '*' stops at a separator, '**' crosses it, '?' is one non-separator
--- character. Everything else is literal.
+-- character; '**/' also matches no directory at all. Everything else is
+-- literal.
 
 local M = {}
 
@@ -64,6 +65,49 @@ end
 local never = function() return false end
 local cache = {}
 
+-- Every spelling of `glob` with each '**/' either kept or dropped: '**/'
+-- matches zero directories too, and a Lua pattern has no optional group to
+-- say so. A trailing '**' has no slash to drop and is left alone.
+local function variants(glob)
+  local at = glob:find('**/', 1, true)
+  if not at then return { glob } end
+  local out = {}
+  for _, rest in ipairs(variants(glob:sub(at + 3))) do
+    out[#out + 1] = glob:sub(1, at + 2) .. rest
+    out[#out + 1] = glob:sub(1, at - 1) .. rest
+  end
+  return out
+end
+
+-- One spelling (no '**/' left to vary) → a path predicate.
+local function compile(g, anchored, dir)
+  if g == '' then
+    return never
+  elseif dir then
+    -- A directory matches as a whole path segment, at the root or at any
+    -- depth unless anchored: 'tests/' catches lua/tests/x.lua, '/tests/'
+    -- only tests/x.lua.
+    local head, nested = '^' .. to_pattern(g) .. '/', '/' .. to_pattern(g) .. '/'
+    return function(path)
+      if path:find(head) then return true end
+      return not anchored and path:find(nested) ~= nil
+    end
+  elseif anchored or g:find('/') then
+    -- A path glob matches the whole path, or (unanchored) any tail of it
+    -- starting at a segment boundary.
+    local whole, tail = '^' .. to_pattern(g) .. '$', '/' .. to_pattern(g) .. '$'
+    return function(path)
+      if path:find(whole) then return true end
+      return not anchored and path:find(tail) ~= nil
+    end
+  end
+  local base = '^' .. to_pattern(g) .. '$'
+  return function(path)
+    local name = path:match('[^/]+$')
+    return name ~= nil and name:find(base) ~= nil
+  end
+end
+
 -- One glob → a path predicate, compiled once per session-lifetime.
 local function matcher(glob)
   if cache[glob] then return cache[glob] end
@@ -72,32 +116,17 @@ local function matcher(glob)
   if anchored then g = g:sub(2) end
   local dir = g:sub(-1) == '/'
   if dir then g = g:sub(1, -2) end
-
-  local m
-  if g == '' then
-    m = never
-  elseif dir then
-    -- A directory matches as a whole path segment, at the root or at any
-    -- depth unless anchored: 'tests/' catches lua/tests/x.lua, '/tests/'
-    -- only tests/x.lua.
-    local head, nested = '^' .. to_pattern(g) .. '/', '/' .. to_pattern(g) .. '/'
+  local preds = {}
+  -- '**/b' drops to 'b', a basename glob — which is what an unanchored
+  -- '**/b' means anyway.
+  for _, v in ipairs(variants(g)) do preds[#preds + 1] = compile(v, anchored, dir) end
+  local m = preds[1]
+  if #preds > 1 then
     m = function(path)
-      if path:find(head) then return true end
-      return not anchored and path:find(nested) ~= nil
-    end
-  elseif anchored or g:find('/') then
-    -- A path glob matches the whole path, or (unanchored) any tail of it
-    -- starting at a segment boundary.
-    local whole, tail = '^' .. to_pattern(g) .. '$', '/' .. to_pattern(g) .. '$'
-    m = function(path)
-      if path:find(whole) then return true end
-      return not anchored and path:find(tail) ~= nil
-    end
-  else
-    local base = '^' .. to_pattern(g) .. '$'
-    m = function(path)
-      local name = path:match('[^/]+$')
-      return name ~= nil and name:find(base) ~= nil
+      for _, p in ipairs(preds) do
+        if p(path) then return true end
+      end
+      return false
     end
   end
   cache[glob] = m
