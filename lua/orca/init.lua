@@ -450,45 +450,73 @@ local function follow_navigation()
   end
 end
 
--- Start (or restart) a review session. `range` is '<base>...<head>', a bare
--- '<base>' (head defaults to HEAD), or empty for <trunk>...HEAD.
-function M.review(range)
-  if session then M.close() end
-
+-- Everything a session needs from git, resolved without touching the one
+-- that may be running: a range that goes nowhere must leave the review on
+-- screen alone. `range` is '<base>...<head>', a bare '<base>' (head
+-- defaults to HEAD), or empty for <trunk>...HEAD. Returns a plan, or nil
+-- plus a message and its level.
+local function resolve(range)
+  local ERROR = vim.log.levels.ERROR
   local base, head
   if range and range ~= '' then
-    base, head = range:match('^(.-)%.%.%.(.*)$')
+    if range:find('...', 1, true) then
+      base, head = range:match('^(.-)%.%.%.(.*)$')
+    elseif range:find('..', 1, true) then
+      return nil, ('%s is a two-dot range — use %s: a review is the merge-base diff')
+        :format(range, (range:gsub('%.%.', '...', 1))), ERROR
+    end
     if not base or base == '' then base, head = range, '' end
     if head == '' then head = 'HEAD' end
   else
     local trunk, err = git.trunk()
-    if not trunk then return notify(err, vim.log.levels.ERROR) end
+    if not trunk then return nil, err, ERROR end
     base, head = trunk, 'HEAD'
   end
 
   local toplevel, terr = git.toplevel()
-  if not toplevel then return notify(terr, vim.log.levels.ERROR) end
+  if not toplevel then return nil, terr, ERROR end
 
   -- Orca-only gate: the plugin is the human half of orca's review, not a
   -- general diff tool. .orca/ lives at the repo root — the parent of the
   -- common git dir, the same rule the orca skills use.
   local root, rerr = git.repo_root()
-  if not root then return notify(rerr, vim.log.levels.ERROR) end
+  if not root then return nil, rerr, ERROR end
   if vim.fn.isdirectory(root .. '/.orca') == 0 then
-    return notify(('no .orca/ at %s — orca.nvim reviews orca-managed repositories; run /orca:init first')
-      :format(root), vim.log.levels.ERROR)
+    return nil, ('no .orca/ at %s — orca.nvim reviews orca-managed repositories; run /orca:init first')
+      :format(root), ERROR
   end
 
+  -- The queries below ask this repository, not a running session's.
+  local prev_root = git.root
+  git.root = toplevel
+  local function fail(msg, level)
+    git.root = prev_root
+    return nil, msg, level or ERROR
+  end
+  local mergebase, mberr = git.merge_base(base, head)
+  if not mergebase then return fail(mberr) end
+  local entries, derr = git.changed_files(mergebase, head)
+  if not entries then return fail(derr) end
+  if #entries == 0 then
+    return fail(('nothing to review — %s...%s has no changes'):format(base, head),
+      vim.log.levels.INFO)
+  end
+  git.root = prev_root
+  return { base = base, head = head, toplevel = toplevel, root = root,
+    mergebase = mergebase, entries = entries }
+end
+
+-- Start (or restart) a review session. A running session is closed only
+-- once the new one is known to be good.
+function M.review(range)
+  local plan, err, level = resolve(range)
+  if not plan then return notify(err, level) end
+  if session then M.close() end
+  local base, head, toplevel, root = plan.base, plan.head, plan.toplevel, plan.root
+  local mergebase, entries = plan.mergebase, plan.entries
   -- From here on every git query asks this repository, whatever the cwd
   -- does next.
   git.root = toplevel
-  local mergebase, mberr = git.merge_base(base, head)
-  if not mergebase then return notify(mberr, vim.log.levels.ERROR) end
-  local entries, derr = git.changed_files(mergebase, head)
-  if not entries then return notify(derr, vim.log.levels.ERROR) end
-  if #entries == 0 then
-    return notify(('nothing to review — %s...%s has no changes'):format(base, head))
-  end
 
   session = {
     entries = entries,

@@ -1386,6 +1386,34 @@ orca.close()
 vim.cmd('cd ' .. vim.fn.fnameescape(here))
 vim.fn.delete(notes_path)
 
+-- ==================== a :OrcaReview that goes nowhere ====================
+
+-- A range that resolves to nothing is refused before the running session
+-- is touched. It used to close the session first and fail after, leaving
+-- no review at all — panel, pair and position gone over a typo.
+local function notices(fn)
+  local got = {}
+  local real = vim.notify
+  vim.notify = function(m) got[#got + 1] = m end
+  pcall(fn)
+  vim.notify = real
+  return table.concat(got, ' | ')
+end
+orca.review('')
+orca.open(idx_of('src/b%.lua'))
+local bad = notices(function() orca.review('nope...HEAD') end)
+check(bad:find('nope', 1, true) ~= nil, 'an unknown base is an error, got: ' .. bad)
+check(panel_win() ~= nil and panel_statusline() == 'OrcaReview main...HEAD'
+  and count_diff_wins() == 2 and panel_cur() == idx_of('src/b%.lua'),
+  'and the running session is still up, pair and panel both')
+-- Two dots are a different diff (trunk's side included), not a typo for
+-- three; the refusal says so by name rather than with a merge-base error.
+local two = notices(function() orca.review('main..HEAD') end)
+check(two:find('two-dot range', 1, true) ~= nil and two:find('main...HEAD', 1, true) ~= nil,
+  'a two-dot range is refused by name, got: ' .. two)
+check(panel_statusline() == 'OrcaReview main...HEAD', 'and leaves the session alone too')
+orca.close()
+
 -- ==================== git plumbing ====================
 
 -- git writes warnings to stderr on a run that succeeds — here, rename
