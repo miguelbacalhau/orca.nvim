@@ -1,81 +1,90 @@
 require('helpers')
 
--- Editing happens in a borderless float over spacer virt_lines: the gap
--- under the anchor stays open (spacers keep the ┃ prefix), float and gap
--- grow with the text, and closing the float restores the real virt_lines
--- whichever way it dies.
-orca.review('')
-orca.open(idx_of('src/b%.lua'))
-local fsrc_win = vim.api.nvim_get_current_win()
-local fsrc_buf = vim.api.nvim_get_current_buf()
-local function first_mark()
-  return vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, { details = true })[1]
+-- The float needs nvim_win_text_height (0.10+). On 0.9 the editor is always
+-- the split, so the float's own checks are skipped there, and the contract
+-- below runs through the split alone.
+local has_float = require('orca.notes').float_input
+
+if has_float then
+  -- Editing happens in a borderless float over spacer virt_lines: the gap
+  -- under the anchor stays open (spacers keep the ┃ prefix), float and gap
+  -- grow with the text, and closing the float restores the real virt_lines
+  -- whichever way it dies.
+  orca.review('')
+  orca.open(idx_of('src/b%.lua'))
+  local fsrc_win = vim.api.nvim_get_current_win()
+  local fsrc_buf = vim.api.nvim_get_current_buf()
+  local function first_mark()
+    return vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, { details = true })[1]
+  end
+
+  -- New comment: the input is a float, and the comment's own extmark holds
+  -- the sign + gap from the start.
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.cmd('OrcaComment')
+  local fwin = vim.api.nvim_get_current_win()
+  local fbuf = vim.api.nvim_get_current_buf()
+  check(vim.api.nvim_win_get_config(fwin).relative == 'editor',
+    'comment input opens as an editor-relative float')
+  check(first_mark() ~= nil, 'the draft\'s extmark holds the gap for a new comment')
+  vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, { 'float seed' })
+  commit()
+  check(not vim.api.nvim_win_is_valid(fwin), 'float closes on :wq')
+  check(#vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, {}) == 1,
+    'one mark: the draft\'s became the comment\'s')
+  local data = read_notes()
+  check(data and data.comments[1].text == 'float seed', 'the float\'s text is in the JSON')
+
+  -- Edit: the existing mark swaps its virt_lines for prefix-only spacers,
+  -- count = the float's text height.
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.cmd('OrcaComment')
+  fwin = vim.api.nvim_get_current_win()
+  fbuf = vim.api.nvim_get_current_buf()
+  check(table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), '\n') == 'float seed',
+    'edit float prefills the existing text')
+  local spacer_ok = true
+  for _, vl in ipairs(first_mark()[4].virt_lines or {}) do
+    if vl[1][1] ~= '┃ ' then spacer_ok = false end
+  end
+  check(spacer_ok, 'edit-time virt_lines are prefix-only spacers')
+  check(#first_mark()[4].virt_lines == vim.api.nvim_win_get_height(fwin),
+    'spacer count equals the float height')
+
+  -- Growth: more text -> taller float and more spacers, in lockstep.
+  vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, { 'grown alpha', 'beta', 'gamma', 'delta' })
+  vim.api.nvim_exec_autocmds('TextChanged', { buffer = fbuf })
+  check(vim.api.nvim_win_get_height(fwin) == 4,
+    'float grows to the text height, got ' .. vim.api.nvim_win_get_height(fwin))
+  check(#first_mark()[4].virt_lines == 4,
+    'spacer count grows in lockstep, got ' .. #first_mark()[4].virt_lines)
+
+  -- Closing puts the real virt_lines back, with the text as it now stands.
+  commit()
+  local restored = {}
+  for _, vl in ipairs(first_mark()[4].virt_lines or {}) do restored[#restored + 1] = vl[1][1] end
+  check(table.concat(restored, '\n'):find('gamma', 1, true) ~= nil,
+    'closing restores real virt_lines with the edited text')
+
+  -- Session close with a float open: float gone, no dangling autocmds.
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.cmd('OrcaComment')
+  fwin = vim.api.nvim_get_current_win()
+  orca.close()
+  check(not vim.api.nvim_win_is_valid(fwin), 'session close takes the open float with it')
+  check(#vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, {}) == 0,
+    'no extmarks survive close with a float open')
+  -- (builtin matchparen owns a '*' WinScrolled; the float's autocmds are the
+  -- window-id-patterned ones)
+  local dangling = 0
+  for _, a in ipairs(vim.api.nvim_get_autocmds({ event = { 'WinScrolled', 'WinClosed' } })) do
+    if tostring(a.pattern):match('^%d+$') then dangling = dangling + 1 end
+  end
+  check(dangling == 0, 'no dangling float autocmds after close, got ' .. dangling)
+  vim.fn.delete(notes_path)
+else
+  out('SKIP the float editor needs 0.10+')
 end
-
--- New comment: the input is a float, and the comment's own extmark holds
--- the sign + gap from the start.
-vim.api.nvim_win_set_cursor(0, { 2, 0 })
-vim.cmd('OrcaComment')
-local fwin = vim.api.nvim_get_current_win()
-local fbuf = vim.api.nvim_get_current_buf()
-check(vim.api.nvim_win_get_config(fwin).relative == 'editor',
-  'comment input opens as an editor-relative float')
-check(first_mark() ~= nil, 'the draft\'s extmark holds the gap for a new comment')
-vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, { 'float seed' })
-commit()
-check(not vim.api.nvim_win_is_valid(fwin), 'float closes on :wq')
-check(#vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, {}) == 1,
-  'one mark: the draft\'s became the comment\'s')
-local data = read_notes()
-check(data and data.comments[1].text == 'float seed', 'the float\'s text is in the JSON')
-
--- Edit: the existing mark swaps its virt_lines for prefix-only spacers,
--- count = the float's text height.
-vim.api.nvim_win_set_cursor(0, { 2, 0 })
-vim.cmd('OrcaComment')
-fwin = vim.api.nvim_get_current_win()
-fbuf = vim.api.nvim_get_current_buf()
-check(table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), '\n') == 'float seed',
-  'edit float prefills the existing text')
-local spacer_ok = true
-for _, vl in ipairs(first_mark()[4].virt_lines or {}) do
-  if vl[1][1] ~= '┃ ' then spacer_ok = false end
-end
-check(spacer_ok, 'edit-time virt_lines are prefix-only spacers')
-check(#first_mark()[4].virt_lines == vim.api.nvim_win_get_height(fwin),
-  'spacer count equals the float height')
-
--- Growth: more text -> taller float and more spacers, in lockstep.
-vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, { 'grown alpha', 'beta', 'gamma', 'delta' })
-vim.api.nvim_exec_autocmds('TextChanged', { buffer = fbuf })
-check(vim.api.nvim_win_get_height(fwin) == 4,
-  'float grows to the text height, got ' .. vim.api.nvim_win_get_height(fwin))
-check(#first_mark()[4].virt_lines == 4,
-  'spacer count grows in lockstep, got ' .. #first_mark()[4].virt_lines)
-
--- Closing puts the real virt_lines back, with the text as it now stands.
-commit()
-local restored = {}
-for _, vl in ipairs(first_mark()[4].virt_lines or {}) do restored[#restored + 1] = vl[1][1] end
-check(table.concat(restored, '\n'):find('gamma', 1, true) ~= nil,
-  'closing restores real virt_lines with the edited text')
-
--- Session close with a float open: float gone, no dangling autocmds.
-vim.api.nvim_win_set_cursor(0, { 2, 0 })
-vim.cmd('OrcaComment')
-fwin = vim.api.nvim_get_current_win()
-orca.close()
-check(not vim.api.nvim_win_is_valid(fwin), 'session close takes the open float with it')
-check(#vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, {}) == 0,
-  'no extmarks survive close with a float open')
--- (builtin matchparen owns a '*' WinScrolled; the float's autocmds are the
--- window-id-patterned ones)
-local dangling = 0
-for _, a in ipairs(vim.api.nvim_get_autocmds({ event = { 'WinScrolled', 'WinClosed' } })) do
-  if tostring(a.pattern):match('^%d+$') then dangling = dangling + 1 end
-end
-check(dangling == 0, 'no dangling float autocmds after close, got ' .. dangling)
-vim.fn.delete(notes_path)
 
 -- The editor is the comment, not a transaction on it. What is typed is the
 -- comment's as it is typed and on disk moments later; there is nothing to
@@ -233,13 +242,15 @@ local function delete_inside(label, key)
   vim.g.orca_mappings = nil
 end
 
-editor_contract('float')
-delete_inside('float', nil)
-delete_inside('float', '<leader>x')
+if has_float then
+  editor_contract('float')
+  delete_inside('float', nil)
+  delete_inside('float', '<leader>x')
+end
 require('orca.notes').float_input = false
 editor_contract('split')
 delete_inside('split', nil)
 delete_inside('split', '<leader>x')
-require('orca.notes').float_input = true
+require('orca.notes').float_input = has_float
 
 finish()

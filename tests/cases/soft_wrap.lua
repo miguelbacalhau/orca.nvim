@@ -77,8 +77,13 @@ local function sign_at(lnum)
   local sp = vim.fn.screenpos(rwin, lnum, 1)
   return sp.row > 0 and vim.fn.screenstring(sp.row, sp.col - 2) or '?'
 end
-check(sign_at(3) == '┃' and sign_at(4) == '┃',
-  ('ranged sign covers every spanned row, got [%s][%s]'):format(sign_at(3), sign_at(4)))
+if vim.fn.has('nvim-0.10') == 1 then
+  check(sign_at(3) == '┃' and sign_at(4) == '┃',
+    ('ranged sign covers every spanned row, got [%s][%s]'):format(sign_at(3), sign_at(4)))
+else
+  -- 0.9 draws a ranged extmark's sign on its first row only.
+  check(sign_at(3) == '┃', 'ranged sign on the anchor row (0.9), got ' .. sign_at(3))
+end
 check(sign_at(1) ~= '┃', 'row outside the range shows no sign')
 
 -- The single ranged extmark drifts as one unit: an insertion above moves

@@ -100,6 +100,8 @@ end
 -- The repo root (the fixture's, holding .orca/) and this branch's notes file.
 root = require('orca.git').repo_root()
 notes_path = root .. '/.orca/review-notes/feature.json'
+-- Its directory exists from the start, so a case can seed the file.
+vim.fn.mkdir(vim.fn.fnamemodify(notes_path, ':h'), 'p')
 function read_notes()
   if vim.fn.filereadable(notes_path) == 0 then return nil end
   return vim.json.decode(table.concat(vim.fn.readfile(notes_path), '\n'),

@@ -7,7 +7,6 @@ local data = { version = 1, range = 'main...HEAD', comments = {
   { id = 1, file = 'src/b.lua', line = 2, text = 'edited thought', quoted = 'line2 CHANGED',
     status = 'open' },
 } }
-vim.fn.mkdir(vim.fn.fnamemodify(notes_path, ':h'), 'p')
 data.comments[1].status = 'addressed'
 data.comments[1].resolution = 'debounced it'
 data.comments[1].id = nil -- a file from before ids existed: backfilled on load
