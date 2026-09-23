@@ -31,6 +31,11 @@ COMMANDS                                                        *orca-commands*
         exists locally. A range that doesn't resolve leaves a running
         session exactly as it was; only a good one replaces it.
 
+        `<head>` must be the commit checked out where you run it: the right
+        side of every pair is the working tree, so any other head would
+        show content it doesn't have. For a branch checked out in another
+        worktree, the refusal names that worktree.
+
         The changed files populate the review panel (|orca-panel| — a
         bottom strip, one line per file with its `M`/`A`/`D`/`R` status)
         and the first file's diff pair opens immediately. <CR> on a panel

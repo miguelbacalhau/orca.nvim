@@ -1414,6 +1414,25 @@ check(two:find('two-dot range', 1, true) ~= nil and two:find('main...HEAD', 1, t
 check(panel_statusline() == 'OrcaReview main...HEAD', 'and leaves the session alone too')
 orca.close()
 
+-- The right side of a pair is the working tree, so reviewing a head that
+-- is not checked out showed this worktree's files under another branch's
+-- name, and filed the comments in that branch's notes. Refused, before any
+-- notes file exists.
+local other_path = root .. '/.orca/review-notes/other.json'
+local elsewhere = notices(function() orca.review('main...other') end)
+check(elsewhere:find('other is not checked out here', 1, true) ~= nil and panel_buf() == nil,
+  'a head that is not checked out is refused, got: ' .. elsewhere)
+check(vim.fn.filereadable(other_path) == 0, 'and no notes file is created for it')
+local feature_wt = notices(function() orca.review('other...feature') end)
+check(feature_wt == '' or feature_wt:find('not checked out', 1, true) == nil,
+  'the checked-out branch named explicitly is fine, got: ' .. feature_wt)
+orca.close()
+vim.fn.system({ 'git', 'worktree', 'add', '-q', vim.fn.fnamemodify(root, ':p') .. 'other-wt', 'other' })
+local pointed = notices(function() orca.review('main...other') end)
+check(pointed:find(root .. '/other-wt', 1, true) ~= nil,
+  'and one checked out elsewhere is pointed at its worktree, got: ' .. pointed)
+vim.fn.system({ 'git', 'worktree', 'remove', '--force', root .. '/other-wt' })
+
 -- ==================== git plumbing ====================
 
 -- git writes warnings to stderr on a run that succeeds — here, rename

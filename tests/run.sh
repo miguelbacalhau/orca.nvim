@@ -52,6 +52,11 @@ mkdir "$SEED/tests"
 printf 'spec one\nspec two\n' > "$SEED/tests/b_spec.lua"
 git -C "$SEED" add -A
 git -C "$SEED" commit -qm change
+# a second branch off main, with a change of its own, checked out nowhere
+git -C "$SEED" checkout -q -b other main
+printf 'other\n' > "$SEED/other.txt"
+git -C "$SEED" add other.txt
+git -C "$SEED" commit -qm other
 git -C "$SEED" checkout -q main # so clones of seed get origin/HEAD = main
 
 # --- fixture: bare repo + .git pointer file + feature worktree, orca-managed

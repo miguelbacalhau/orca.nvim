@@ -94,6 +94,17 @@ function M.branch_of(rev)
   return nil
 end
 
+-- The worktree that has local branch <branch> checked out, or nil.
+function M.worktree_of(branch)
+  local out = git({ 'worktree', 'list', '--porcelain' })
+  local path
+  for _, line in ipairs(out or {}) do
+    local wt = line:match('^worktree (.+)$')
+    if wt then path = wt end
+    if line == 'branch refs/heads/' .. branch then return path end
+  end
+end
+
 -- The commit sha <rev> points at, or nil.
 function M.rev(rev)
   local out = git({ 'rev-parse', '--verify', '--quiet', rev .. '^{commit}' })

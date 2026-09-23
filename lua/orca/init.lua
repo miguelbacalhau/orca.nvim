@@ -493,6 +493,17 @@ local function resolve(range)
     git.root = prev_root
     return nil, msg, level or ERROR
   end
+  -- The right side of every pair is the working tree, so a head that is
+  -- not the checked-out commit would show other content than it names, and
+  -- file its comments under its key regardless.
+  local head_sha = git.rev(head)
+  if not head_sha then return fail(('%s is not a commit here'):format(head)) end
+  if head_sha ~= git.rev('HEAD') then
+    local branch = git.branch_of(head)
+    local wt = branch and git.worktree_of(branch)
+    return fail(('%s is not checked out here — a review\'s right side is the working tree; %s')
+      :format(head, wt and ('review it from its worktree, ' .. wt) or 'check it out first'))
+  end
   local mergebase, mberr = git.merge_base(base, head)
   if not mergebase then return fail(mberr) end
   local entries, derr = git.changed_files(mergebase, head)
