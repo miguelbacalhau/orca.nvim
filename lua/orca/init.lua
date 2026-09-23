@@ -599,11 +599,11 @@ function M.review(range)
   -- not the `hidden` action is bound to a key.
   local view = session.view
   if view.n > 0 then
-    hints[#hints + 1] = ('%s %s them'):format(key_of(m, 'hidden') or '<CR> on the … row',
-      view.hidden and 'shows' or ('hides ' .. view.n))
+    hints[#hints + 1] = ('%s %s'):format(key_of(m, 'hidden') or '<CR> on the … row',
+      view.hidden and 'shows them' or ('hides ' .. view.n))
   end
   notify(('%d file%s in %s%s%s%s'):format(#entries, #entries == 1 and '' or 's', session.range,
-    view.hidden and (', %d hidden'):format(view.n) or '',
+    (view.hidden and view.n > 0) and (', %d hidden'):format(view.n) or '',
     loaded > 0 and (', %d comment%s loaded'):format(loaded, loaded == 1 and '' or 's') or '',
     #hints > 0 and (' — ' .. table.concat(hints, ', ')) or ''))
   if view.blocked then

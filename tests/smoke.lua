@@ -1290,12 +1290,36 @@ vim.g.orca_mappings = nil
 
 -- vim.g.orca_review_hidden = false opts out: everything listed, the row
 -- still there offering to hide.
+-- The session's opening line says the same, in words: how the row's toggle
+-- reads from here.
+local function opening(fn)
+  local got = {}
+  local real = vim.notify
+  vim.notify = function(m) got[#got + 1] = m end
+  fn()
+  vim.notify = real
+  return got[1] or ''
+end
+local hint = opening(function() orca.review('') end)
+check(hint:find(', 2 hidden', 1, true) ~= nil and hint:sub(-#'<CR> on the … row shows them') == '<CR> on the … row shows them',
+  'hidden start: the hint ends "<CR> on the … row shows them", got: ' .. hint)
+orca.close()
 vim.g.orca_review_hidden = false
-orca.review('')
+hint = opening(function() orca.review('') end)
 check(#panel_lines() == 9, 'orca_review_hidden = false lists everything, got ' .. #panel_lines())
 check(summary_row():find('<CR> hides 2', 1, true) ~= nil, 'opted out, the row offers to hide')
+check(hint:sub(-#'<CR> on the … row hides 2') == '<CR> on the … row hides 2'
+  and not hint:find('hidden', 1, true),
+  'opted out: the hint says "hides 2", not "hides 2 them", got: ' .. hint)
 orca.close()
 vim.g.orca_review_hidden = nil
+-- A review no group claims anything in has nothing hidden to mention.
+vim.g.orca_review_groups = { tests = false, none = { 'nothing-matches-this' } }
+hint = opening(function() orca.review('') end)
+check(not hint:find('hidden', 1, true) and not hint:find('row', 1, true),
+  'with nothing grouped, the hint leaves the row out, got: ' .. hint)
+orca.close()
+vim.g.orca_review_groups = nil
 
 -- Groups are configurable and additive: a new key adds a group, every
 -- group rides the one toggle, and the summary breaks several down.
