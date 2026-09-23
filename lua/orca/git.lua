@@ -4,15 +4,48 @@
 
 local M = {}
 
--- Run git with list-form arguments (no shell involved). Returns the output
--- lines, or nil plus a message.
-local function git(args)
+-- Run git with list-form arguments (no shell involved) and return its exit
+-- code, stdout and stderr, kept apart: git writes warnings to stderr on a
+-- successful run (a skipped rename detection, say), and those are not
+-- output. vim.system is 0.10+; 0.9 gets the same from a buffered job, whose
+-- data lists carry NUL bytes as "\n" inside an item.
+local function run(cmd)
+  if vim.system then
+    local r = vim.system(cmd, { text = true }):wait()
+    return r.code, r.stdout or '', r.stderr or ''
+  end
+  local out, err = { '' }, { '' }
+  local job = vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, data) out = data end,
+    on_stderr = function(_, data) err = data end,
+  })
+  if job <= 0 then return -1, '', 'cannot run git' end
+  local code = vim.fn.jobwait({ job })[1]
+  for i, item in ipairs(out) do out[i] = item:gsub('\n', '\0') end
+  return code, table.concat(out, '\n'), table.concat(err, '\n')
+end
+
+-- git's stdout, or nil plus a message carrying its stderr.
+local function git_raw(args)
   local cmd = { 'git' }
   vim.list_extend(cmd, args)
-  local lines = vim.fn.systemlist(cmd)
-  if vim.v.shell_error ~= 0 then
-    return nil, ('git %s failed'):format(table.concat(args, ' '))
+  local code, stdout, stderr = run(cmd)
+  if code ~= 0 then
+    local why = vim.trim(stderr):match('[^\n]*')
+    return nil, ('git %s failed%s'):format(table.concat(args, ' '),
+      why ~= '' and (': ' .. why) or '')
   end
+  return stdout
+end
+
+-- git's stdout as lines, or nil plus a message.
+local function git(args)
+  local stdout, err = git_raw(args)
+  if not stdout then return nil, err end
+  local lines = vim.split(stdout, '\n', { plain = true })
+  if lines[#lines] == '' then table.remove(lines) end
   return lines
 end
 
