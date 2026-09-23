@@ -10,6 +10,7 @@
 -- separately), and either side refuses a version it doesn't know.
 
 local git = require('orca.git')
+local notify = require('orca.util').notify
 
 local M = {}
 
@@ -17,10 +18,6 @@ M.VERSION = 1
 
 local NS = vim.api.nvim_create_namespace('orca_notes')
 local state = nil
-
-local function notify(msg, level)
-  vim.notify('orca: ' .. msg, level or vim.log.levels.INFO)
-end
 
 local function define_hl()
   vim.api.nvim_set_hl(0, 'OrcaCommentSign', { link = 'DiagnosticSignInfo', default = true })

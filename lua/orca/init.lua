@@ -24,15 +24,12 @@ local pairview = require('orca.diff')
 local notes = require('orca.notes')
 local panel = require('orca.panel')
 local filter = require('orca.filter')
+local notify = require('orca.util').notify
 
 local M = {}
 
 local AUGROUP = 'orca-review'
 local session = nil
-
-local function notify(msg, level)
-  vim.notify('orca: ' .. msg, level or vim.log.levels.INFO)
-end
 
 -- Convenience maps; the :Orca* commands are the public API. The session's
 -- navigation verbs are mapped globally for as long as it lives (see

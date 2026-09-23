@@ -22,6 +22,8 @@
 -- character; '**/' also matches no directory at all. Everything else is
 -- literal.
 
+local notify = require('orca.util').notify
+
 local M = {}
 
 -- Shipped defaults. These are load-bearing — a too-greedy glob silently
@@ -35,10 +37,6 @@ M.DEFAULT_GROUPS = {
     '*_test.*', '*_spec.*', '*.test.*', '*.spec.*', 'test_*.py', 'conftest.py',
   },
 }
-
-local function notify(msg, level)
-  vim.notify('orca: ' .. msg, level or vim.log.levels.INFO)
-end
 
 -- Glob → Lua pattern fragment. Escaping every non-alphanumeric is always
 -- safe (%x is the literal x for any non-alphanumeric x), so the literal
