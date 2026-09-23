@@ -858,11 +858,24 @@ end
 -- editing. The editor is the comment — what you type is saved as you type.
 function M.comment(line1, line2)
   local path, buf = comment_target()
-  if path then notes.comment(path, buf, line1, line2) end
+  if not path then return end
+  notes.comment(path, buf, line1, line2)
+  -- The editor answers to the `delete` key too: deleting what you are
+  -- writing should not mean leaving it first. The buffer is orca's and
+  -- wipes on close, so there is nothing to hand back.
+  local ebuf = notes.editor_buf()
+  if ebuf then
+    for _, lhs in ipairs(session.maps.delete or {}) do
+      vim.keymap.set('n', lhs, M.comment_delete,
+        { buffer = ebuf, nowait = true, desc = 'orca: delete this comment' })
+    end
+  end
 end
 
--- Delete the comment under the cursor.
+-- Delete the comment under the cursor — or, from inside the editor, the
+-- one being edited.
 function M.comment_delete()
+  if session and notes.delete_editing() then return end
   local path = comment_target()
   if path then notes.delete(path, vim.fn.line('.')) end
 end

@@ -1012,9 +1012,52 @@ local function editor_contract(label)
   vim.fn.delete(notes_path)
 end
 
+-- Deleting from inside the editor, by the `delete` key when one is bound
+-- and by :OrcaCommentDelete when not: the comment being edited goes, or
+-- the draft is discarded, and the editor closes either way. It used to
+-- mean leaving the editor for the file first.
+local function delete_inside(label, key)
+  vim.g.orca_mappings = key and { delete = key } or nil
+  vim.fn.writefile({ vim.json.encode({ version = 1, range = 'main...HEAD', comments = {
+    { id = 1, file = 'src/b.lua', line = 2, text = 'doomed', quoted = 'line2 CHANGED', status = 'open' },
+  } }) }, notes_path)
+  vim.cmd('silent! only')
+  orca.review('')
+  orca.open(idx_of('src/b%.lua'))
+  local src_win, src_buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+  local how = key and 'the delete key' or ':OrcaCommentDelete'
+  local function del()
+    if key then keys(key:gsub('<leader>', '\\')) else vim.cmd('OrcaCommentDelete') end
+  end
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.cmd('OrcaComment')
+  local ed = vim.api.nvim_get_current_win()
+  if key then
+    check(vim.fn.maparg(key, 'n', false, true).desc == 'orca: delete this comment',
+      label .. ': the delete key is mapped in the editor')
+  end
+  del()
+  check(not vim.api.nvim_win_is_valid(ed) and vim.fn.filereadable(notes_path) == 0,
+    ('%s: %s inside the editor deletes the comment and closes it'):format(label, how))
+  vim.api.nvim_set_current_win(src_win)
+  vim.api.nvim_win_set_cursor(0, { 3, 0 })
+  vim.cmd('OrcaComment')
+  ed = vim.api.nvim_get_current_win()
+  del()
+  check(not vim.api.nvim_win_is_valid(ed) and #vim.api.nvim_buf_get_extmarks(src_buf, NS, 0, -1, {}) == 0
+    and vim.fn.filereadable(notes_path) == 0,
+    ('%s: %s inside a draft discards it'):format(label, how))
+  orca.close()
+  vim.g.orca_mappings = nil
+end
+
 editor_contract('float')
+delete_inside('float', nil)
+delete_inside('float', '<leader>x')
 require('orca.notes').float_input = false
 editor_contract('split')
+delete_inside('split', nil)
+delete_inside('split', '<leader>x')
 require('orca.notes').float_input = true
 
 -- ================= comment navigation: review-wide =================

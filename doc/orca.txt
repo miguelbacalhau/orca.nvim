@@ -133,7 +133,10 @@ COMMANDS                                                        *orca-commands*
                                                            *:OrcaCommentDelete*
 :OrcaCommentDelete
         Delete the comment covering the cursor line. An editor open on
-        that comment closes with it.
+        that comment closes with it. From inside the editor, it deletes
+        the comment being edited (or discards a new one) and closes the
+        editor; a `delete` key from |vim.g.orca_mappings| is mapped there
+        too.
 
                                           *:OrcaCommentNext* *:OrcaCommentPrev*
 :OrcaCommentNext

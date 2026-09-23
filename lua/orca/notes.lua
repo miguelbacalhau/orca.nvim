@@ -662,19 +662,49 @@ function M.comment(path, buf, line, line2)
   input(c.draft and ('%s:%d'):format(path, line) or ('#%d %s:%d'):format(c.id, path, c.line), c)
 end
 
--- Delete the comment covering `line` of `path`, if any — looked up now, so
--- whatever has changed since an editor opened, it is this one that goes.
--- An editor open on it closes with it.
-function M.delete(path, line)
-  if not state or state.blocked then return end
-  local c, idx = covering(path, line)
-  if not c then return notify('no comment on this line') end
+-- Take `c` out of the review: off the list, off the screen, and its
+-- editor closed if one is open on it. A draft is only ever on screen.
+local function remove(c)
   c.deleted = true
-  table.remove(state.comments, idx)
+  for i, x in ipairs(state.comments) do
+    if x == c then
+      table.remove(state.comments, i)
+      break
+    end
+  end
   unplace(c)
   if state.editing == c then M.close_input() end
-  M.save()
+  if not c.draft then M.save() end
+end
+
+-- Delete the comment covering `line` of `path`, if any — looked up now, so
+-- whatever has changed since an editor opened, it is this one that goes.
+function M.delete(path, line)
+  if not state or state.blocked then return end
+  local c = covering(path, line)
+  if not c then return notify('no comment on this line') end
+  remove(c)
   notify(('comment #%d deleted — %s:%d'):format(c.id, path, line))
+end
+
+-- Delete from inside the editor: the comment it is editing, or the draft
+-- it holds. False when the current buffer is not an editor.
+function M.delete_editing()
+  local e = state and state.edit
+  if not (e and vim.api.nvim_get_current_buf() == e.buf) then return false end
+  if state.blocked then return true end
+  local c = e.c
+  -- Typed but not yet pulled in, a draft is still a draft: nothing to save.
+  local draft = c.draft
+  remove(c)
+  notify(draft and 'comment discarded' or ('comment #%d deleted'):format(c.id))
+  return true
+end
+
+-- The open editor's buffer, or nil.
+function M.editor_buf()
+  local e = state and state.edit
+  return e and vim.api.nvim_buf_is_valid(e.buf) and e.buf or nil
 end
 
 -- End the notes layer: the editor closed (which saves what it holds),
