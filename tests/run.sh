@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
 # Smoke test: build a disposable bare-repo-with-worktrees fixture (orca's
 # layout — trunk is the bare repo's symbolic HEAD, the branch under review
-# lives in a worktree), then run tests/smoke.lua in headless nvim from
-# inside that worktree.
+# lives in a worktree), then run each of tests/cases/*.lua in its own
+# headless nvim from inside a fresh copy of it. `sh tests/run.sh notes cd`
+# runs just those cases.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -61,27 +62,48 @@ git -C "$SEED" checkout -q main # so clones of seed get origin/HEAD = main
 
 # --- fixture: bare repo + .git pointer file + feature worktree, orca-managed
 # (.orca/ at the fixture root — the parent of the common git dir, where the
-# plugin must discover it from inside the worktree)
-FIX="$TMP/fixture"
-mkdir "$FIX"
-git clone -q --bare "$SEED" "$FIX/.bare"
-printf 'gitdir: ./.bare\n' > "$FIX/.git"
-git --git-dir="$FIX/.bare" symbolic-ref HEAD refs/heads/main
-git -C "$FIX" worktree add -q feature feature
-mkdir "$FIX/.orca"
-
-# --- run the smoke test from inside the worktree
-cd "$FIX/feature"
-OUT=$(nvim --clean --headless -n --cmd "set rtp+=$ROOT" \
-  "+luafile $ROOT/tests/smoke.lua" +qa! 2>&1) || {
-  printf '%s\n' "$OUT"
-  exit 1
+# plugin must discover it from inside the worktree). Each case gets a fresh
+# one, so nothing a case leaves behind can reach the next.
+fixture() {
+  FIX="$TMP/$1"
+  mkdir "$FIX"
+  git clone -q --bare "$SEED" "$FIX/.bare"
+  printf 'gitdir: ./.bare\n' > "$FIX/.git"
+  git --git-dir="$FIX/.bare" symbolic-ref HEAD refs/heads/main
+  git -C "$FIX" worktree add -q feature feature
+  mkdir "$FIX/.orca"
 }
-printf '%s\n' "$OUT"
-case "$OUT" in
-  *"SMOKE PASS"*) ;;
-  *) echo 'smoke.lua did not report SMOKE PASS' >&2; exit 1 ;;
-esac
+
+# --- the smoke cases: tests/cases/*.lua, or the ones named on the command
+# line, each in its own headless nvim from inside its fixture's worktree.
+# A case prints OK/FAIL per check and CASE PASS when all of them held; its
+# output is shown only when it failed.
+if [ $# -gt 0 ]; then
+  CASES=$(for n in "$@"; do printf '%s/tests/cases/%s.lua\n' "$ROOT" "$n"; done)
+else
+  CASES=$(ls "$ROOT"/tests/cases/*.lua)
+fi
+FAILED=0
+for CASE in $CASES; do
+  NAME=$(basename "$CASE" .lua)
+  fixture "case-$NAME"
+  OUT=$(cd "$TMP/case-$NAME/feature" && nvim --clean --headless -n --cmd "set rtp+=$ROOT" \
+    --cmd "lua package.path = '$ROOT/tests/?.lua;' .. package.path" \
+    "+luafile $CASE" +qa! 2>&1) || true
+  case "$OUT" in
+    *"CASE PASS"*) echo "PASS $NAME ($(printf '%s\n' "$OUT" | grep -o 'OK   ' | wc -l | tr -d ' ') checks)" ;;
+    *)
+      FAILED=$((FAILED + 1))
+      echo "FAIL $NAME"
+      printf '%s\n' "$OUT" | sed 's/^/     /'
+      ;;
+  esac
+done
+if [ "$FAILED" -gt 0 ]; then
+  echo "$FAILED case(s) failed" >&2
+  exit 1
+fi
+[ $# -gt 0 ] && exit 0
 
 # --- repo without .orca/: the plugin is orca-only and refuses with a
 # pointer at /orca:init.
