@@ -114,9 +114,9 @@ COMMANDS                                                        *orca-commands*
         The editor is the comment, not a draft of it: what you type is
         the comment's as you type it, and in the notes file (|orca-notes|)
         half a second later, on leaving insert mode, and on close — a
-        crash loses nothing, and there is nothing to commit. Close it any
-        way you like; `:w` flushes the save, so the habit is harmless and
-        `:wq` closes. Leaving the float for another window closes it too,
+        crash loses nothing, and there is nothing to commit. When you are
+        done, `:w` (or `:wq`, or `q` in normal mode) closes it; `:q` works
+        too, with nothing to confirm. Leaving the float for another window closes it too,
         so the comment shows rendered, `#N` and all, as soon as you are
         back in the code. A new comment exists from its first word: close the
         editor before typing anything and nothing was created, no id used

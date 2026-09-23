@@ -570,7 +570,7 @@ local function input(title, c)
   else
     buf = vim.api.nvim_create_buf(false, false)
   end
-  -- acwrite, so :w is the flush it looks like and :wq closes.
+  -- acwrite, so :w can mean what it always has here: done, save and close.
   vim.bo[buf].buftype = 'acwrite'
   vim.bo[buf].bufhidden = 'wipe'
   vim.bo[buf].swapfile = false
@@ -588,12 +588,26 @@ local function input(title, c)
     group = group, buffer = buf,
     callback = function() sync_editor(e, true) end,
   })
-  -- Leaving insert mode, :w, and :q (QuitPre runs before the unsaved-
-  -- changes check) all write now.
-  vim.api.nvim_create_autocmd({ 'InsertLeave', 'BufWriteCmd', 'QuitPre' }, {
+  -- Leaving insert mode and :q (QuitPre runs before the unsaved-changes
+  -- check) write now.
+  vim.api.nvim_create_autocmd({ 'InsertLeave', 'QuitPre' }, {
     group = group, buffer = buf,
     callback = function() sync_editor(e) end,
   })
+  -- :w writes and closes. Deferred: on :wq the quit still owns the window.
+  local function done()
+    if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
+  end
+  vim.api.nvim_create_autocmd('BufWriteCmd', {
+    group = group, buffer = buf,
+    callback = function()
+      sync_editor(e)
+      vim.schedule(done)
+    end,
+  })
+  -- q in normal mode is the way out without a command. Everything is
+  -- already saved, so there is nothing to confirm.
+  vim.keymap.set('n', 'q', done, { buffer = buf, nowait = true, desc = 'orca: close the comment' })
   vim.api.nvim_create_autocmd('WinClosed', {
     group = group,
     pattern = tostring(win),

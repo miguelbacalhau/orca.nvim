@@ -150,6 +150,21 @@ local function editor_contract(label)
   check(not vim.bo.modified, label .. ': and nothing is ever unsaved, so :q has nothing to refuse')
   commit('quit')
 
+  -- :w is done — saved and closed, as it always was here — and q in normal
+  -- mode closes too. Saving alone used to leave you stuck in the editor.
+  ed = edit_at(4)
+  type_in({ 'typed live', 'more', 'still more' })
+  vim.cmd('write')
+  drain(function() return not vim.api.nvim_win_is_valid(ed) end)
+  check(not vim.api.nvim_win_is_valid(ed) and by_id(3).text == 'typed live\nmore\nstill more',
+    label .. ': :w saves and closes the editor')
+  ed = edit_at(4)
+  keys('q')
+  drain(function() return not vim.api.nvim_win_is_valid(ed) end)
+  check(not vim.api.nvim_win_is_valid(ed), label .. ': q in normal mode closes it')
+  drain(function() return vim.api.nvim_get_current_win() == src_win end)
+  check(vim.api.nvim_get_current_win() == src_win, label .. ': and the cursor is back in the file')
+
   -- A draft closed with no words never existed: no mark, no comment, and no
   -- id used up.
   ed = edit_at(1)
