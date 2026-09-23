@@ -626,33 +626,15 @@ function M.review(range)
   M.open(view.rows[1])
 end
 
--- An open comment editor and the file under it are one thing: the editor
--- hangs in an extmark gap in that file's buffer, at a screen position that
--- window's scroll decides, and the pair it floats over is about to be torn
--- down. So every file change resolves it first — a leftover editor over the
--- next file is a window with no gap under it, still holding the slot the
--- next :OrcaComment wants. An editor nobody typed into just gets out of the
--- way; one holding unwritten words keeps the keystroke, which goes to
--- revealing it instead: nobody presses "next file" meaning "throw that
--- away". Returns true when the caller must stand down.
-local function editor_holds_the_keystroke()
-  if not notes.input_pending() then
-    notes.close_input()
-    return false
-  end
-  notes.focus_input()
-  notify('the comment is unwritten — :w commits it, :q throws it away',
-    vim.log.levels.WARN)
-  return true
-end
-
 -- Open the diff pair for the idx-th changed file, with its right side in
 -- `win` when that is given and usable, else wherever pick_window() says.
 function M.open(idx, win)
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
-  if editor_holds_the_keystroke() then return end
+  -- An open comment editor hangs in the pair about to be taken down. What
+  -- it holds is already the comment's, so it just closes.
+  notes.close_input()
   idx = math.max(1, math.min(idx, #session.entries))
   session.navigating = true
   session.index = idx
@@ -799,9 +781,6 @@ local function comment_walk(dir)
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
-  -- Checked here too, not just in M.open: this walk moves the cursor after
-  -- the file change, and a refused change must not leave it doing that.
-  if editor_holds_the_keystroke() then return end
   local locs = {}
   for _, l in ipairs(notes.locations()) do
     l.fidx = session.by_path[l.path]
@@ -876,8 +855,7 @@ end
 -- Create or edit the review comment on the given line(s) of the current
 -- buffer: normal mode anchors the cursor line, a visual range the whole
 -- selection; on an already-commented line the existing comment opens for
--- editing. Input is a small scratch split — :w commits, quitting without
--- writing aborts, committing empty text deletes.
+-- editing. The editor is the comment — what you type is saved as you type.
 function M.comment(line1, line2)
   local path, buf = comment_target()
   if path then notes.comment(path, buf, line1, line2) end

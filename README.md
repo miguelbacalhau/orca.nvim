@@ -39,7 +39,7 @@ checks the install and prescribes whichever path fits.
 | `:OrcaReview [range]` | Start a session: `<base>...<head>` in the merge-base sense; bare `<base>` implies `...HEAD`; no argument defaults to `<trunk>...HEAD`. Opens the review panel, loads any existing review notes for the branch, and opens the first file's diff pair. |
 | `:OrcaReviewNext` / `:OrcaReviewPrev` | Move to the next/previous changed file. |
 | `:OrcaReviewPanel` | The panel's focus ladder: not there → open and focus; there but unfocused → focus; focused → back to the file. The panel stays open either way. |
-| `:OrcaComment` | Create or edit the comment on the current line (visual mode: on the range). Opens a borderless float in place over the comment's virtual lines (a bottom split on Neovim 0.9) — `:w` commits, quitting without writing aborts, committing empty text deletes. A file change with unwritten text in the editor doesn't abandon it — it sends you back to it. |
+| `:OrcaComment` | Create or edit the comment on the current line (visual mode: on the range). Opens a borderless float in place over the comment's virtual lines (a bottom split on Neovim 0.9). What you type is saved as you type — no `:w` needed (it's harmless, and `:wq` closes). A new comment exists from its first word; emptying one doesn't delete it. A file change just closes the editor, keeping the text. |
 | `:OrcaCommentNext` / `:OrcaCommentPrev` | Jump to the next/previous review comment, crossing files in review order. |
 | `:OrcaCommentDelete` | Delete the comment under the cursor. |
 | `:OrcaReviewClose` | End the session and clean up. |

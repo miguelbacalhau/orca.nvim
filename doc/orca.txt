@@ -102,21 +102,28 @@ COMMANDS                                                        *orca-commands*
         comment's virtual lines render, so editing looks like typing
         into the virtual text itself: the gap under the anchor stays
         open and grows with the text. Review comments are multi-line.
-        `:w` (or `:wq`) commits; quitting without writing aborts;
-        committing empty text deletes the comment. Each committed
-        comment is written to the notes file immediately (|orca-notes|)
-        — a crash loses nothing. (On Neovim 0.9 the input is a small
-        scratch split at the bottom instead; same contract.)
+        (On Neovim 0.9 the input is a small scratch split at the bottom
+        instead; same behavior.)
+
+        The editor is the comment, not a draft of it: what you type is
+        the comment's as you type it, and in the notes file (|orca-notes|)
+        half a second later, on leaving insert mode, and on close — a
+        crash loses nothing, and there is nothing to commit. Close it any
+        way you like; `:w` flushes the save, so the habit is harmless and
+        `:wq` closes. A new comment exists from its first word: close the
+        editor before typing anything and nothing was created, no id used
+        up. Opening a comment is not editing it — one orca resolved stays
+        resolved until its text actually changes, and changing it back
+        restores the resolution. Emptying a comment does not delete it:
+        on close it keeps its last words, and |:OrcaCommentDelete| is the
+        way to delete.
 
         The editor belongs to the file under it: the gap it hangs in is
         an extmark in that buffer, and where it sits on screen is that
         window's scroll. So the session's file changes — |:OrcaReviewNext|,
         the panel, the comment motions, a changed file entered by any
-        other route — resolve it before tearing the pair down. Untouched,
-        it closes and the move goes through; holding text you haven't
-        committed, it keeps the keystroke instead: the cursor goes back to
-        the editor (scrolled into view if the anchor had drifted off it)
-        and nothing moves until you `:w` or `:q`.
+        other route — close it before the pair changes, keeping whatever
+        it holds.
 
         Comments anchor to the working-tree (right) side of the pair
         only. The left buffer is a base-version scratch; a comment there
@@ -125,8 +132,8 @@ COMMANDS                                                        *orca-commands*
 
                                                            *:OrcaCommentDelete*
 :OrcaCommentDelete
-        Delete the comment covering the cursor line. (Committing empty
-        text from |:OrcaComment| does the same.)
+        Delete the comment covering the cursor line. An editor open on
+        that comment closes with it.
 
                                           *:OrcaCommentNext* *:OrcaCommentPrev*
 :OrcaCommentNext

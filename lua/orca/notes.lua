@@ -203,9 +203,9 @@ function M.refit(wins)
     if vim.api.nvim_win_is_valid(win) then bufs[vim.api.nvim_win_get_buf(win)] = true end
   end
   for _, c in ipairs(state.comments) do
-    -- The comment under edit shows spacers, not its text — re-placing it
-    -- would collapse the gap under the open float.
-    if c.buf and bufs[c.buf] and live(c) and c ~= state.editing then
+    -- The comment under the float shows spacers, not its text — re-placing
+    -- it would collapse the gap the float sits in.
+    if c.buf and bufs[c.buf] and live(c) and c ~= state.gap then
       sync(c)
       place(c, c.buf)
     end
@@ -399,24 +399,115 @@ local function float_pos(win, line)
   return sp.row - 1 + th.all - th.fill, sp.col - 1 + vim.fn.strdisplaywidth('┃ ')
 end
 
--- The float over the gap: swap the anchor's virt_lines for spacers (same
--- extmark id, so the gap stays open and the gutter bar keeps running), or
--- create a temporary mark for a comment that does not exist yet. Float
--- height and spacer count grow in lockstep with the text — the gap
--- breathes while typing. One WinClosed autocmd centralizes restoration,
--- whichever way the window dies (:wq, :q, M.stop()).
-local function float_open(buf, from, anchor, row, col)
-  local existing = anchor.existing
-  local reuse = existing and existing.buf == anchor.buf and live(existing) or false
-  local temp -- the temporary extmark a not-yet-committed comment edits over
-  local function gap(h)
-    local id = set_mark(anchor.buf, reuse and existing.mark or temp,
-      anchor.line, anchor.end_line, spacers(h))
-    if reuse then existing.mark = id else temp = id end
+-- The comment editor edits the comment itself; there is no commit step.
+-- Text reaches the comment as it is typed, and the notes file shortly
+-- after (SAVE_DELAY), on leaving insert mode, on :w, and on close. A
+-- comment that doesn't exist yet is a draft: it has its extmark — its
+-- anchor — from the start, but takes an id and a place in state.comments
+-- only with its first words, so an editor closed empty leaves nothing.
+
+local SAVE_DELAY = 500
+
+-- The editor buffer's text, trailing blank lines dropped.
+local function editor_text(buf)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  while #lines > 0 and lines[#lines]:match('^%s*$') do table.remove(lines) end
+  return table.concat(lines, '\n')
+end
+
+local function save_soon()
+  local s = state
+  s.save_timer = s.save_timer or (vim.uv or vim.loop).new_timer()
+  s.save_timer:start(SAVE_DELAY, 0, vim.schedule_wrap(function()
+    if state == s then M.save() end
+  end))
+end
+
+local function save_now()
+  if state.save_timer then state.save_timer:stop() end
+  M.save()
+end
+
+-- Take the editor's text into its comment. Empty text changes nothing: a
+-- draft stays a draft, and an existing comment keeps its last words
+-- (emptying is not how a comment is deleted). The comment reopens only on
+-- a real change — edited back to what it was, its answer still stands.
+-- True when the comment changed.
+local function pull(e)
+  local c = e.c
+  if c.deleted or not vim.api.nvim_buf_is_valid(e.buf) then return false end
+  local text = editor_text(e.buf)
+  if text == '' or text == c.text then return false end
+  if c.draft then
+    -- Ids are assigned once and never reused — a deleted comment leaves a
+    -- gap, so a stale #N reference in another comment's text dangles
+    -- visibly instead of rebinding to a newer comment.
+    c.draft = nil
+    c.id = state.next_id
+    state.next_id = state.next_id + 1
+    state.comments[#state.comments + 1] = c
   end
-  local win = vim.api.nvim_open_win(buf, true, {
+  c.text = text
+  if text == e.orig.text then
+    c.status, c.resolution = e.orig.status, e.orig.resolution
+  else
+    c.status, c.resolution = 'open', nil
+  end
+  return true
+end
+
+-- The editor's text into the comment, then onto disk: now, or after
+-- SAVE_DELAY while typing. 'modified' is kept off throughout — everything
+-- is saved, so :q has nothing to warn about.
+local function sync_editor(e, soon)
+  if pull(e) then
+    -- The split fallback shows the comment's own virt_lines, live.
+    if not e.float and live(e.c) then place(e.c, e.c.buf) end
+    if soon then
+      if state.on_change then state.on_change() end
+      save_soon()
+    end
+  end
+  if not soon then save_now() end
+  if vim.api.nvim_buf_is_valid(e.buf) then vim.bo[e.buf].modified = false end
+end
+
+-- The editor is closing, by whatever route. The comment keeps what was
+-- typed; a draft with no words goes, extmark and all; a deleted comment
+-- (M.delete while it was open) is already gone and stays gone.
+local function finish(e)
+  if e.scroll then pcall(vim.api.nvim_del_autocmd, e.scroll) end
+  if not state then return end
+  state.input, state.editing, state.gap, state.edit = nil, nil, nil, nil
+  local c = e.c
+  if c.deleted then return end
+  sync_editor(e)
+  if c.draft then
+    if c.buf and vim.api.nvim_buf_is_valid(c.buf) and c.mark then
+      pcall(vim.api.nvim_buf_del_extmark, c.buf, NS, c.mark)
+    end
+    return
+  end
+  if vim.api.nvim_buf_is_valid(e.buf) and editor_text(e.buf) == '' then
+    notify(('comment #%d keeps its text — :OrcaCommentDelete deletes it'):format(c.id))
+  elseif c.text ~= e.orig.text then
+    notify(('comment #%d saved — %s'):format(c.id, vim.fn.fnamemodify(state.path, ':~')))
+  end
+  if live(c) then
+    sync(c)
+    place(c, c.buf)
+  end
+end
+
+-- The float over the gap: the comment's virt_lines swap for spacers (same
+-- extmark, so the gap stays open and the gutter bar keeps running), and
+-- float height and spacer count grow in lockstep with the text — the gap
+-- breathes while typing.
+local function float_open(e, from, row, col)
+  local c = e.c
+  local win = vim.api.nvim_open_win(e.buf, true, {
     relative = 'editor', row = row, col = col,
-    width = wrap_width(anchor.buf), height = 1,
+    width = wrap_width(c.buf), height = 1,
     -- explicit: 0.11's 'winborder' would otherwise default a border in,
     -- shifting the float off the gap and breaking the in-place illusion
     border = 'none',
@@ -428,54 +519,31 @@ local function float_open(buf, from, anchor, row, col)
   -- text_height on the float is the exact display height of the text at
   -- this width — no reimplementation of the wrap algorithm.
   local function fit()
-    if not vim.api.nvim_win_is_valid(win) then return end
+    if not (vim.api.nvim_win_is_valid(win) and live(c)) then return end
     local h = vim.api.nvim_win_text_height(win, {}).all
     vim.api.nvim_win_set_height(win, h)
-    gap(h)
+    sync(c)
+    c.mark = set_mark(c.buf, c.mark, c.line, c.end_line, spacers(h))
   end
+  state.gap = c
   fit()
-  if reuse then state.editing = existing end
   vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
     group = 'orca-notes',
-    buffer = buf,
+    buffer = e.buf,
     callback = fit,
   })
   -- relative='editor' does not follow scrolling: recompute while the float
   -- is open; when the anchor scrolls out of view, hide it.
-  local scroll = vim.api.nvim_create_autocmd('WinScrolled', {
+  e.scroll = vim.api.nvim_create_autocmd('WinScrolled', {
     group = 'orca-notes',
     pattern = tostring(from),
     callback = function()
-      if not vim.api.nvim_win_is_valid(win) then return end
-      local r, c = float_pos(from, anchor.line)
+      if not (vim.api.nvim_win_is_valid(win) and live(c)) then return end
+      local r, cl = float_pos(from, mark_line(c.buf, c.mark))
       if r then
-        vim.api.nvim_win_set_config(win, { relative = 'editor', row = r, col = c, hide = false })
+        vim.api.nvim_win_set_config(win, { relative = 'editor', row = r, col = cl, hide = false })
       else
         vim.api.nvim_win_set_config(win, { hide = true })
-      end
-    end,
-  })
-  vim.api.nvim_create_autocmd('WinClosed', {
-    group = 'orca-notes',
-    pattern = tostring(win),
-    once = true,
-    callback = function()
-      pcall(vim.api.nvim_del_autocmd, scroll)
-      if not state then return end
-      state.editing = nil
-      if state.input == win then state.input, state.input_anchor = nil, nil end
-      if temp then pcall(vim.api.nvim_buf_del_extmark, anchor.buf, NS, temp) end
-      if existing then
-        -- Restore the real virt_lines — but only if the comment still
-        -- exists (committing empty text deleted it). On abort this renders
-        -- the unchanged text; after a commit it is idempotent.
-        for _, c in ipairs(state.comments) do
-          if c == existing then
-            sync(c)
-            place(c, c.buf and vim.api.nvim_buf_is_valid(c.buf) and c.buf or anchor.buf)
-            break
-          end
-        end
       end
     end,
   })
@@ -487,18 +555,14 @@ end
 -- force the fallback path on a modern host.
 M.float_input = vim.fn.has('nvim-0.10') == 1
 
--- Multi-line input in an acwrite scratch buffer: :w (or :wq) commits,
--- quitting without writing aborts. Committing empty text is the delete
--- route. On 0.10+ the buffer shows in a borderless float over spacer
--- virt_lines at the anchor — editing looks like typing into the virtual
--- text itself; otherwise it is a small split at the bottom.
-local function input(title, prefill, anchor, on_submit)
-  if state.input and vim.api.nvim_win_is_valid(state.input) then
-    return vim.api.nvim_set_current_win(state.input)
-  end
+-- Open the editor on comment `c` (a draft or a real one, its extmark in
+-- place). On 0.10+ it is a borderless float over spacer virt_lines at the
+-- anchor — editing looks like typing into the virtual text itself;
+-- otherwise a small split at the bottom.
+local function input(title, c)
   local from = vim.api.nvim_get_current_win()
   local row, col
-  if M.float_input then row, col = float_pos(from, anchor.line) end
+  if M.float_input then row, col = float_pos(from, c.line) end
   local win, buf
   if not row then
     -- 0.9, or an anchor with no screen position: the split fallback.
@@ -508,169 +572,124 @@ local function input(title, prefill, anchor, on_submit)
   else
     buf = vim.api.nvim_create_buf(false, false)
   end
+  -- acwrite, so :w is the flush it looks like and :wq closes.
   vim.bo[buf].buftype = 'acwrite'
   vim.bo[buf].bufhidden = 'wipe'
   vim.bo[buf].swapfile = false
   pcall(vim.api.nvim_buf_set_name, buf, 'orca://comment/' .. title)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, prefill)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(c.text, '\n', { plain = true }))
   vim.bo[buf].filetype = 'markdown'
   vim.bo[buf].modified = false
-  if row then win = float_open(buf, from, anchor, row, col) end
-  state.input = win
-  -- Where the editor hangs, for M.focus_input's reveal: a float's position
-  -- is `from`'s scroll, and it hides itself when the anchor scrolls out of
-  -- view. The split fallback has no such geometry.
-  state.input_anchor = row and { win = from, buf = anchor.buf, line = anchor.line } or nil
-  vim.api.nvim_create_autocmd('BufWriteCmd', {
-    buffer = buf,
+  local e = { c = c, buf = buf, float = row ~= nil,
+    orig = { text = c.text, status = c.status, resolution = c.resolution } }
+  if row then win = float_open(e, from, row, col) end
+  state.input, state.editing = win, c
+
+  local group = 'orca-notes'
+  vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
+    group = group, buffer = buf,
+    callback = function() sync_editor(e, true) end,
+  })
+  -- Leaving insert mode, :w, and :q (QuitPre runs before the unsaved-
+  -- changes check) all write now.
+  vim.api.nvim_create_autocmd({ 'InsertLeave', 'BufWriteCmd', 'QuitPre' }, {
+    group = group, buffer = buf,
+    callback = function() sync_editor(e) end,
+  })
+  vim.api.nvim_create_autocmd('WinClosed', {
+    group = group,
+    pattern = tostring(win),
+    once = true,
     callback = function()
-      local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-      vim.bo[buf].modified = false
-      -- Deferred: on :wq the quit still owns this window, and closing it
-      -- mid-command would pull it out from under the command. Focus goes
-      -- back where the comment was made, not wherever the close dumps it.
-      vim.schedule(function()
-        if vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
-        if vim.api.nvim_win_is_valid(from) then vim.api.nvim_set_current_win(from) end
-      end)
-      on_submit(lines)
+      -- The split closed from inside (:q, :wq): focus goes back where the
+      -- comment was made, not to the panel the split sat under. Deferred,
+      -- because the window is still closing, and dropped if another editor
+      -- has opened meanwhile. (A float hands focus back to `from` itself.)
+      local inside = not e.float and vim.api.nvim_get_current_win() == win and not e.closing
+      finish(e)
+      if inside then
+        vim.schedule(function()
+          if state and state.input then return end
+          if vim.api.nvim_win_is_valid(from) then pcall(vim.api.nvim_set_current_win, from) end
+        end)
+      end
     end,
   })
+  e.win = win
+  state.edit = e
 end
 
--- Is an editor open on words nobody has committed yet? The buffer's own
--- 'modified' is the answer: prefill lands unmodified, :w clears it again.
--- The session's file changes ask before they tear the anchor's pair down.
-function M.input_pending()
-  local win = state and state.input
-  if not (win and vim.api.nvim_win_is_valid(win)) then return false end
-  return vim.bo[vim.api.nvim_win_get_buf(win)].modified
-end
-
--- Close the open editor, abandoning it — the same route as quitting its
--- window, down to the WinClosed restoration. No-op when none is open.
+-- Close the open editor, if any. What it holds is already the comment's;
+-- closing saves it (or drops an empty draft) through the WinClosed route
+-- that every other way of closing it takes too.
 function M.close_input()
-  local win = state and state.input
-  if win and vim.api.nvim_win_is_valid(win) then
-    pcall(vim.api.nvim_win_close, win, true)
-  end
-end
-
--- Put the cursor back in the open editor, bringing it on screen first: the
--- float hides when its anchor scrolls away, and being sent to a window
--- nobody can see is worse than not being sent at all. Moving the cursor to
--- the anchor is what scrolls it back — the float's position follows.
--- False when there is no editor to go to.
-function M.focus_input()
-  local win = state and state.input
-  if not (win and vim.api.nvim_win_is_valid(win)) then return false end
-  -- Only when that window still shows the anchored file: one the user has
-  -- since :edited something else into is not the gap's window any more, and
-  -- scrolling it to a line number that now means something else helps
-  -- nobody. The editor still takes the cursor, wherever it is hanging.
-  local a = state.input_anchor
-  if a and vim.api.nvim_win_is_valid(a.win) and vim.api.nvim_win_get_buf(a.win) == a.buf then
-    vim.api.nvim_set_current_win(a.win)
-    local last = vim.api.nvim_buf_line_count(a.buf)
-    pcall(vim.api.nvim_win_set_cursor, a.win, { math.min(a.line, last), 0 })
-    local r, c = float_pos(a.win, a.line)
-    if r then
-      vim.api.nvim_win_set_config(win, { relative = 'editor', row = r, col = c, hide = false })
-    end
-  end
-  if not vim.api.nvim_win_get_config(win).hide then
-    pcall(vim.api.nvim_set_current_win, win)
-  end
-  return true
+  local e = state and state.edit
+  if not (e and state.input and vim.api.nvim_win_is_valid(state.input)) then return end
+  e.closing = true
+  pcall(vim.api.nvim_win_close, state.input, true)
 end
 
 -- Create the comment anchored at [line, line2] of path in buf, or edit the
--- one already covering `line`. Editing re-opens it: changed text means the
--- previous resolution no longer answers it.
+-- one already covering `line`.
 function M.comment(path, buf, line, line2)
   if not state then return end
   if state.blocked then
     return notify(('commenting disabled — %s is %s'):format(state.path, state.blocked),
       vim.log.levels.ERROR)
   end
-  local existing, idx = covering(path, line)
-  local prefill = existing and vim.split(existing.text, '\n', { plain = true }) or {}
-  local title = existing and ('#%d %s:%d'):format(existing.id, path, existing.line)
-    or ('%s:%d'):format(path, line)
-  -- The anchor drives the float presentation: where the gap opens, and
-  -- which extmark holds it (existing's own, or a temporary one).
-  local anchor = {
-    buf = buf,
-    line = existing and existing.line or line,
-    end_line = existing and existing.end_line
-      or ((line2 and line2 > line) and line2 or nil),
-    existing = existing,
-  }
-  input(title, prefill, anchor, function(lines)
-    if not state then return end
-    while #lines > 0 and lines[#lines]:match('^%s*$') do table.remove(lines) end
-    if #lines == 0 then
-      if existing then
-        unplace(existing)
-        table.remove(state.comments, idx)
-        M.save()
-        notify('comment deleted — ' .. title)
-      end
-      return
-    end
-    local text = table.concat(lines, '\n')
-    local id
-    if existing then
-      id = existing.id
-      existing.text = text
-      existing.status = 'open'
-      existing.resolution = nil
-      if existing.buf ~= buf then unplace(existing) end
-      sync(existing)
-      place(existing, buf)
-    else
-      -- Ids are assigned once and never reused — a deleted comment leaves a
-      -- gap, so a stale #N reference in another comment's text dangles
-      -- visibly instead of rebinding to a newer comment.
-      id = state.next_id
-      state.next_id = state.next_id + 1
-      local c = {
-        id = id,
-        file = path,
-        line = line,
-        end_line = (line2 and line2 > line) and line2 or nil,
-        text = text,
-        quoted = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1] or '',
-        status = 'open',
-      }
-      state.comments[#state.comments + 1] = c
+  if state.input and vim.api.nvim_win_is_valid(state.input) then
+    return vim.api.nvim_set_current_win(state.input)
+  end
+  local c = covering(path, line)
+  if c then
+    if not (c.buf == buf and live(c)) then
+      unplace(c)
       place(c, buf)
     end
-    M.save()
-    notify(('comment #%d saved — %s'):format(id, vim.fn.fnamemodify(state.path, ':~')))
-  end)
+  else
+    c = {
+      draft = true,
+      file = path,
+      line = line,
+      end_line = (line2 and line2 > line) and line2 or nil,
+      text = '',
+      quoted = vim.api.nvim_buf_get_lines(buf, line - 1, line, false)[1] or '',
+      status = 'open',
+      buf = buf,
+    }
+    c.mark = set_mark(buf, nil, c.line, c.end_line, spacers(1))
+  end
+  input(c.draft and ('%s:%d'):format(path, line) or ('#%d %s:%d'):format(c.id, path, c.line), c)
 end
 
--- Delete the comment covering `line` of `path`, if any.
+-- Delete the comment covering `line` of `path`, if any — looked up now, so
+-- whatever has changed since an editor opened, it is this one that goes.
+-- An editor open on it closes with it.
 function M.delete(path, line)
   if not state or state.blocked then return end
-  local existing, idx = covering(path, line)
-  if not existing then return notify('no comment on this line') end
-  unplace(existing)
+  local c, idx = covering(path, line)
+  if not c then return notify('no comment on this line') end
+  c.deleted = true
   table.remove(state.comments, idx)
+  unplace(c)
+  if state.editing == c then M.close_input() end
   M.save()
-  notify(('comment #%d deleted — %s:%d'):format(existing.id, path, line))
+  notify(('comment #%d deleted — %s:%d'):format(c.id, path, line))
 end
 
--- End the notes layer: final save (anchors as the session last saw them),
--- extmarks cleared, any open input abandoned. The file persists — that is
--- the point.
+-- End the notes layer: the editor closed (which saves what it holds),
+-- a final save (anchors as the session last saw them), extmarks cleared.
+-- The file persists — that is the point.
 function M.stop()
   if not state then return end
-  M.save()
-  -- Close the input first: a float's WinClosed restoration re-places
-  -- extmarks, which must happen before the unplace sweep, not after it.
+  -- The editor first: its close re-places the comment's extmark, which must
+  -- happen before the unplace sweep, not after it.
   M.close_input()
+  M.save()
+  if state.save_timer then
+    state.save_timer:stop()
+    state.save_timer:close()
+  end
   for _, c in ipairs(state.comments) do unplace(c) end
   pcall(vim.api.nvim_del_augroup_by_name, 'orca-notes')
   state = nil
