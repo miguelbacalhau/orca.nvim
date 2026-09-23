@@ -31,6 +31,18 @@ local M = {}
 local AUGROUP = 'orca-review'
 local session = nil
 
+-- `fn`, refusing politely when no session is running — the one guard
+-- every entry point that needs a session shares.
+local function with_session(fn)
+  return function(...)
+    if not session then
+      notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
+      return
+    end
+    return fn(...)
+  end
+end
+
 -- Convenience maps; the :Orca* commands are the public API. The session's
 -- navigation verbs are mapped globally for as long as it lives (see
 -- GLOBAL_ACTIONS below) and the line-anchored ones only in the buffers it
@@ -625,10 +637,7 @@ end
 
 -- Open the diff pair for the idx-th changed file, with its right side in
 -- `win` when that is given and usable, else wherever pick_window() says.
-function M.open(idx, win)
-  if not session then
-    return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
-  end
+M.open = with_session(function(idx, win)
   -- An open comment editor hangs in the pair about to be taken down. What
   -- it holds is already the comment's, so it just closes.
   notes.close_input()
@@ -683,28 +692,22 @@ function M.open(idx, win)
 
   refresh_panel()
   if entry.binary then notify(entry.path .. ' is binary — opened without a diff') end
-end
+end)
 
 -- Open the file on panel row `row`. The panel's rows are the view's, so
 -- row and entry index part ways the moment a group folds something away;
 -- the row past the last file is the summary row, whose <CR> toggles.
-function M.open_row(row)
-  if not session then
-    return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
-  end
+M.open_row = with_session(function(row)
   local idx = session.view.rows[row]
   if idx then return M.open(idx) end
   M.toggle_hidden()
-end
+end)
 
 -- Move count files forward/back (default 1) through the panel's view:
 -- what the groups folded away is not something the walk stops on. At the
 -- edge, a polite message; a count that would overshoot clamps to the edge
 -- instead of erroring.
-local function walk(dir, count)
-  if not session then
-    return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
-  end
+local walk = with_session(function(dir, count)
   local rows = session.view.rows
   local pos
   for r, i in ipairs(rows) do
@@ -718,7 +721,7 @@ local function walk(dir, count)
   if dir > 0 and pos >= #rows then return notify('already at the last file') end
   if dir < 0 and pos <= 1 then return notify('already at the first file') end
   M.open(rows[math.max(1, math.min(pos + dir * (count or 1), #rows))])
-end
+end)
 
 function M.next(count) walk(1, count) end
 function M.prev(count) walk(-1, count) end
@@ -727,10 +730,7 @@ function M.prev(count) walk(-1, count) end
 -- mapping action, and this function for anyone driving orca from their own
 -- keymap layer. There is no command — like `open`, this is an action on
 -- the panel, and the row is always there to carry it.
-function M.toggle_hidden()
-  if not session then
-    return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
-  end
+M.toggle_hidden = with_session(function()
   session.hidden = not session.hidden
   refresh_panel()
   local view = session.view
@@ -741,7 +741,7 @@ function M.toggle_hidden()
   if view.n == 0 then return notify('no files match the hidden groups in this review') end
   notify(view.hidden and ('%d file%s hidden'):format(view.n, view.n == 1 and '' or 's')
     or ('showing all %d files'):format(#session.entries))
-end
+end)
 
 -- The panel's focus ladder — one function behind both :OrcaReviewPanel and
 -- the `panel` mapping action: not there → open and focus; there but
@@ -750,10 +750,7 @@ end
 -- always on screen the round trip is what the key is for, and pressing it
 -- twice leaves you where you started. vim.g.orca_panel_pinned = false puts
 -- the close back.
-function M.panel()
-  if not session then
-    return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
-  end
+M.panel = with_session(function()
   local win = panel.win()
   if not win then
     show_panel()
@@ -768,16 +765,13 @@ function M.panel()
     if not (back and vim.api.nvim_win_is_valid(back)) then back = pick_window() end
     pcall(vim.api.nvim_set_current_win, back)
   end
-end
+end)
 
 -- Review-wide comment walk. Comments are orca's own extmarks — nothing
 -- native can find them — so orca walks them itself: file order (the
 -- session's), then line, crossing files through M.open. Lines come from
 -- notes.locations(), extmark-resolved, so positions self-heal after edits.
-local function comment_walk(dir)
-  if not session then
-    return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
-  end
+local comment_walk = with_session(function(dir)
   local locs = {}
   for _, l in ipairs(notes.locations()) do
     l.fidx = session.by_path[l.path]
@@ -823,7 +817,7 @@ local function comment_walk(dir)
   if target.fidx ~= here then M.open(target.fidx) end
   pcall(vim.api.nvim_win_set_cursor, 0,
     { math.min(target.line, vim.api.nvim_buf_line_count(0)), 0 })
-end
+end)
 
 function M.comment_next() comment_walk(1) end
 function M.comment_prev() comment_walk(-1) end
@@ -832,11 +826,7 @@ function M.comment_prev() comment_walk(-1) end
 -- tree (right) side of a changed text file. The left side is a base-
 -- version scratch ("this deletion was wrong" has no working-tree anchor —
 -- v1 punts), and deleted/binary entries have no commentable right side.
-local function comment_target()
-  if not session then
-    notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
-    return
-  end
+local comment_target = with_session(function()
   local buf = vim.api.nvim_get_current_buf()
   local name = vim.api.nvim_buf_get_name(buf)
   local prefix = session.toplevel .. '/'
@@ -847,7 +837,7 @@ local function comment_target()
     return
   end
   return entry.path, buf
-end
+end)
 
 -- Create or edit the review comment on the given line(s) of the current
 -- buffer: normal mode anchors the cursor line, a visual range the whole
