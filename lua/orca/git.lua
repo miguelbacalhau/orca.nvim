@@ -117,14 +117,9 @@ function M.is_ancestor(a, b)
   return git({ 'merge-base', '--is-ancestor', a, b }) ~= nil
 end
 
--- The default review base — a default, not discovery; explicit ranges
--- bypass it. Resolved in tiers:
---  1. In a linked worktree, the symbolic HEAD of the *common* git dir — in
---     orca's bare-repo-with-worktrees layout, the bare repo's trunk branch.
---  2. Otherwise HEAD is the branch under review, not a trunk signal (a
---     normal checkout's common dir is its own .git): origin/HEAD names the
---     remote's default branch; prefer its local twin.
---  3. Last resort: the first of main/master/trunk that exists locally.
+-- The default review base (tiers in :help :OrcaReview): a linked worktree's
+-- common-dir HEAD, else origin/HEAD (its local twin preferred), else the
+-- first local main/master/trunk.
 function M.trunk()
   local gitdir = git({ 'rev-parse', '--git-dir' }, true)
   local common = git({ 'rev-parse', '--git-common-dir' }, true)

@@ -1,36 +1,14 @@
--- Hidden groups: the panel's view filter. An orca run's diff is often
--- mostly tests, and the look-through before merge wants the source in
--- front of it — so files matching a named group fold away behind one
--- summary row, and the row brings them back.
---
--- Nothing here touches the session's entry list. Hiding is a view over it
--- (orca/init.lua owns session.view), so a hidden file still opens by
--- :edit, still anchors comments, and still reaches the notes file — and it
--- is never hidden silently: the panel always carries the count, and three
--- things pin an entry visible whatever the groups say. A comment on it
--- (you have already said something about this file), being the file the
--- session is currently in, and being the last one left.
---
--- A group is a list of globs, where the '/' decides what gets matched:
---
---   *_test.go     no slash         the basename
---   tests/        trailing slash   a directory, at any depth
---   spec/**/*.rb  slash inside     the whole repo-relative path
---   /tests/       leading slash    anchored at the repository root
---
--- '*' stops at a separator, '**' crosses it, '?' is one non-separator
--- character; '**/' also matches no directory at all. Everything else is
--- literal.
+-- Hidden groups (:help orca-hidden): globs compiled to path predicates, and
+-- the panel's view over a session's entries. A view, never a filter — the
+-- entry list is not touched here. Glob syntax: '/' decides what is matched
+-- (basename, directory, path, anchored); '*', '**', '**/' and '?'.
 
 local notify = require('orca.util').notify
 
 local M = {}
 
--- Shipped defaults. These are load-bearing — a too-greedy glob silently
--- drops real code from every review in every repo — so every directory
--- entry is a literal name and nothing matches on a bare "test" substring.
--- Fixture directories are deliberately absent: fixture data is frequently
--- the thing under review.
+-- Shipped defaults. A too-greedy glob would hide real code in every repo,
+-- so every entry is literal — no bare "test" substring, no fixture dirs.
 M.DEFAULT_GROUPS = {
   tests = {
     'tests/', 'test/', 'spec/', '__tests__/', 'testdata/',
@@ -184,16 +162,10 @@ function M.classifier(groups)
   end
 end
 
--- The panel's view over a session's entries: which it shows, in order, and
--- what the groups claim — { rows, groups, n, hidden, blocked }. `rows` are
--- entry indices; `groups` counts each group's claims and `n` all of them.
--- Three things pin an entry visible whatever its group says: a comment on
--- it (you have already said something about this file — `counts`, by
--- path), being the current entry (`index` — you are looking at it), and
--- being the last one left. That last one is the only place the default
--- overrides itself: hiding every file would open a review with nothing in
--- it, so the view shows everything, with `hidden` false and `blocked` set
--- to say why.
+-- The panel's view: { rows (entry indices), groups (claims per group), n
+-- (all claims), hidden, blocked }. A comment (`counts`) or being current
+-- (`index`) pins an entry visible; if every entry would hide, all show,
+-- with hidden false and blocked set.
 function M.view(entries, index, counts, hidden, classify)
   local rows, groups, n = {}, {}, 0
   for i, e in ipairs(entries) do

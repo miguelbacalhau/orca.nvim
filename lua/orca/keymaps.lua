@@ -1,30 +1,14 @@
--- The session's keymaps: vim.g.orca_mappings resolved into keys, and those
--- keys mapped and handed back. Convenience maps; the :Orca* commands are the
--- public API. The session's navigation verbs are mapped globally for as
--- long as it lives (GLOBAL_ACTIONS) and the line-anchored ones only in the
--- buffers it owns; both go away when it lets go, and whatever a key meant
--- before — globally or in a buffer — is what it means after.
---
--- The actions themselves are the session's (orca/init.lua), handed in to
--- new(), so neither module requires the other.
+-- The session's keymaps (:help orca-keymaps): vim.g.orca_mappings resolved,
+-- mapped, and every key handed back as it was found. The actions are the
+-- session's, passed to new(), so this module never requires orca/init.lua.
 
 local panel = require('orca.panel')
 local notify = require('orca.util').notify
 
 local M = {}
 
--- vim.g.orca_mappings reshapes the maps: a table overrides per action (a
--- string, a list of keys for one action, or false to drop it), false
--- wholesale drops them all. Resolved once per session.
--- Only `open` ships bound: in an orca-owned buffer <CR> shadows nothing
--- (the fugitive/oil precedent), and neither does a double-click — the
--- panel replaced the quickfix list, where <2-LeftMouse> was <CR>, and in
--- a nofile list buffer the native double-click (select the word under the
--- pointer, in visual mode) is noise. Everything else ships unbound — orca
--- never binds a key that doesn't already mean what orca makes it do, and
--- with no orca quickfix list there is no native key left to upgrade (]q/[q
--- would shadow the user's real quickfix motion for the whole session).
--- The commands and config keys remain.
+-- Only `open` ships bound, on keys that shadow nothing in orca's own panel.
+-- Everything else is opt-in: orca never takes a key that means something.
 local DEFAULT_MAPPINGS = {
   open = { '<CR>', '<2-LeftMouse>' }, -- panel only
 }
@@ -35,18 +19,9 @@ local VALID_ACTIONS = {
   hidden = true,
 }
 
--- Actions that don't care which buffer you are in. These are mapped
--- globally for the session's lifetime instead of in the buffers orca owns,
--- because "which file is next" is a property of the review, not of the
--- window you happen to be standing in: a grep result, :help, a terminal, a
--- file outside the diff — the session's keys answer from all of them, the
--- way the :Orca* commands always have. Whatever a key meant before is
--- captured and handed back at :OrcaReviewClose.
---
--- The rest stay buffer-local, because there they are the honest answer:
--- `comment`/`delete` need a changed file's working-tree line to anchor to,
--- and `open` is the panel's alone — a global <CR> would shadow the one key
--- nobody can spare.
+-- Actions mapped globally for the session: they don't care which buffer
+-- you are in. The rest are buffer-local — comment and delete need a
+-- working-tree line, and a global <CR> would shadow everyone's.
 local GLOBAL_ACTIONS = {
   next = true, prev = true, panel = true, hidden = true, close = true,
   comment_next = true, comment_prev = true,
@@ -112,12 +87,9 @@ local function is_pointer(lhs)
   return (s:find('mouse') or s:find('release') or s:find('drag')) ~= nil
 end
 
--- Open whatever the pointer is on. The cursor is no help here: a click on
--- the panel's 'statusline' (the session's range) fires the map too with
--- the cursor still parked wherever it was, and getmousepos() clamps a
--- click past the last row onto it — after a hide-toggle the window is
--- routinely taller than its rows, so that clamp would toggle the groups
--- back on a click into empty space. Both cases are a no-op instead.
+-- Open the panel row under the pointer, not the cursor. A click on the
+-- statusline, or past the last row (getmousepos clamps it onto that row),
+-- opens nothing.
 local function open_click(open_row)
   local win = panel.win()
   local pos = vim.fn.getmousepos()
@@ -219,12 +191,9 @@ function Keys:detach(buf)
   self.mapped[buf] = nil
 end
 
--- The session's global maps, set once at :OrcaReview and undone at
--- :OrcaReviewClose. maparg() reports the *current buffer's* mapping ahead
--- of the global one, so what a key meant before is asked from inside an
--- empty scratch buffer, where nothing is buffer-local — otherwise a review
--- started from a buffer with an LSP map on the same key would hand that
--- map back globally at close.
+-- The session's global maps. What each key meant before is asked from an
+-- empty scratch buffer, since maparg() prefers the current buffer's map and
+-- would otherwise hand an LSP's buffer map back globally.
 function Keys:attach_globals()
   local probe = vim.api.nvim_create_buf(false, true)
   local function previous(lhs)

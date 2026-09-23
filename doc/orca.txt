@@ -61,6 +61,12 @@ COMMANDS                                                        *orca-commands*
         to a buffer outside the review collapses the pair (left split
         closed, diff mode off); the session stays alive, and the panel,
         |:OrcaReviewNext|, or entering any changed file resumes the walk.
+        When the file you land on can use the pair already on screen, the
+        pair's two windows stay where they are and only their contents
+        change, so a jump never reflows the layout. Taking a pair down
+        uses |:diffoff!|, which ends diff mode for the whole tab page: a
+        diff of your own in the same tab would be compared against the
+        pair anyway, so review in a tab of its own if you keep one.
 
                                                              *:OrcaReviewClose*
 :OrcaReviewClose

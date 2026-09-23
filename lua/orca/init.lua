@@ -1,23 +1,7 @@
--- orca.nvim — branch review inside the user's own Neovim, the human half
--- of an orca run's review. Orca-managed repositories only: .orca/ must
--- exist at the repo root.
---
--- A session is the merge-base diff of <base>...<head>: changed files in an
--- orca-owned panel (orca/panel.lua — a buffer nothing else can evict, where
--- the quickfix list was shared territory), pinned open for as long as the
--- session lives, with one side-by-side diff pair at a time beside it. The
--- session's navigation keys are global for the same span, so the review
--- answers from outside its own buffers too — a grep result, :help, a file
--- that isn't in the diff. Session state is module-local and dies with it; the
--- one artifact that outlives it is the review-notes file (orca/notes.lua) —
--- line-anchored comments under .orca/review-notes/ that flow back into the
--- orca run.
---
--- What the panel lists is a view over the session's entries, not the
--- entries themselves (orca/filter.lua): named groups — tests by default —
--- fold away behind the panel's summary row, while the entry list stays
--- whole, so a hidden file still opens by :edit, still anchors comments,
--- and still walks with the comment motions.
+-- orca.nvim's review session: the merge-base diff of <base>...<head>, one
+-- diff pair at a time beside a pinned panel (orca/panel.lua). Session state
+-- is module-local and dies with the session; the notes file (orca/notes.lua)
+-- is what outlives it. Design notes: :help orca.
 
 local git = require('orca.git')
 local pairview = require('orca.diff')
@@ -44,23 +28,16 @@ local function with_session(fn)
   end
 end
 
--- Is the panel pinned open for the session? It is: the panel is the
--- review's map — what is left, what you have already said something about,
--- where you are in the walk — and a review that has lost it is one
--- navigating blind, with nothing on screen saying so. So closing its window
--- no longer hides it; the window comes straight back, and the way out is
--- ending the session. vim.g.orca_panel_pinned = false restores the old
--- closable panel for anyone who wants the rows back as screen space.
+-- Is the panel pinned open for the session? Yes unless
+-- vim.g.orca_panel_pinned = false (:help vim.g.orca_panel_pinned).
 local function resolve_pinned()
   local v = vim.g.orca_panel_pinned
   if v == nil then return true end
   return v and true or false
 end
 
--- Do sessions start with the groups folded away? They do: an orca run's
--- diff is usually mostly tests, and the look-through before merge wants
--- the source in front of it. vim.g.orca_review_hidden = false opts out.
--- Resolved once per session, like the mappings.
+-- Do sessions start with the groups folded away? Yes unless
+-- vim.g.orca_review_hidden = false. Resolved once per session.
 local function resolve_hidden()
   local v = vim.g.orca_review_hidden
   if v == nil then return true end
@@ -93,14 +70,9 @@ local function show_panel()
   session.keys:attach_panel(buf)
 end
 
--- Put the pinned panel back, without taking focus from wherever the user
--- is: a panel returning is something you notice at the edge of the screen,
--- not with your cursor. The split is made from an ordinary window —
--- :split from a float is a different operation, and a picker preview is a
--- perfectly ordinary place to be standing when :only takes the panel out.
--- nvim_win_call rather than a pair of nvim_set_current_win calls: it fires
--- no WinEnter/BufEnter for the detour, so the navigation follower never
--- sees a window the user never visited.
+-- Put the pinned panel back without taking focus. Split from an ordinary
+-- window (a float may be current), and through nvim_win_call, which fires
+-- no WinEnter/BufEnter for the navigation follower to act on.
 local function ensure_panel()
   if not session or not session.pinned or panel.win() then return end
   local cur = vim.api.nvim_get_current_win()
@@ -125,10 +97,7 @@ local function ensure_panel()
 end
 
 -- Hand the pair on screen back: its maps detached. Clearing `session.pair`
--- is the caller's — M.open lets go of the record here and then offers it to
--- pairview.open as the one to take over. Where the next pair goes is not
--- decided here: `session.last_win` is set by the open that built this one,
--- and a jump names its own window.
+-- is the caller's; where the next pair goes is not decided here.
 local function release_pair(pair)
   for _, buf in ipairs(pair.bufs) do session.keys:detach(buf) end
 end
@@ -158,11 +127,8 @@ local function entry_of(buf)
   return idx, idx and session.entries[idx]
 end
 
--- The window the next diff pair's right side goes into: the previous
--- pair's, else the current or first ordinary window, else a fresh split.
--- Never the panel (by id — its buffer is nofile like the pair's scratch
--- side) and never a quickfix window (a foreign :grep list may be open
--- mid-session, and its window must stay the user's).
+-- Can a pair's right side go in window `w`? Never a float, the panel (by
+-- id: its buffer is nofile like a scratch side) or a quickfix window.
 local function usable(w)
   return w and vim.api.nvim_win_is_valid(w)
     and vim.api.nvim_win_get_config(w).relative == ''
@@ -170,6 +136,8 @@ local function usable(w)
     and vim.bo[vim.api.nvim_win_get_buf(w)].buftype ~= 'quickfix'
 end
 
+-- The previous pair's window, else the current or first usable one, else
+-- a fresh split.
 local function pick_window()
   if usable(session.last_win) then return session.last_win end
   local cur = vim.api.nvim_get_current_win()
@@ -181,25 +149,19 @@ local function pick_window()
   return vim.api.nvim_get_current_win()
 end
 
--- While the session lives, the diff pair follows navigation: entering a
--- changed file by any route (picker, gd, :edit) opens its pair around the
--- window the user landed in; a foreign buffer landing in a pair window
--- collapses the pair. The collapse is load-bearing, not polish — 'diff' and
--- 'scrollbind' are window-local, so the wandered-to buffer would otherwise
--- inherit diff mode against the previous file's still-open scratch. The
--- session itself survives a collapse.
+-- BufEnter: the pair follows navigation. Entering a changed file opens its
+-- pair around the landed window; a foreign buffer in a pair window collapses
+-- the pair, since 'diff' is window-local and would carry over to it.
 local function follow_navigation()
   if not session or session.navigating then return end
   -- Pickers preview into floats; entering one must not collapse anything.
   if vim.api.nvim_win_get_config(0).relative ~= '' then return end
   local buf = vim.api.nvim_get_current_buf()
-  -- Entering the panel's own buffer is the panel arriving, not leaving —
-  -- and it fires mid-open, before the window is recorded, so reasserting
-  -- here would build a second panel on top of the first.
+  -- The panel's own BufEnter fires mid-open, before its window is known:
+  -- reasserting here would build a second panel.
   if buf == panel.buf() then return end
-  -- A foreign buffer landing in the panel's window takes the panel away
-  -- without ever closing a window, so WinClosed alone would miss it. The
-  -- check is two API calls on a hook that already runs on every BufEnter.
+  -- A buffer landing in the panel's window closes no window, so WinClosed
+  -- misses it.
   ensure_panel()
   local pair = session.pair
   if pair then
@@ -210,25 +172,18 @@ local function follow_navigation()
 
   local idx = entry_of(buf)
   if idx then
-    -- Re-entering the file whose pair is already current must be a no-op:
-    -- a binary "pair" is a plain :edit of the very buffer just entered,
-    -- and reopening it here would loop open → BufEnter → open.
+    -- Already current: a no-op, or a binary file's plain :edit would loop
+    -- open → BufEnter → open.
     if idx == session.index and pair then return end
-    -- The pair goes where the jump landed. A window that is not the pair's
-    -- own right side cannot be taken over, so the old pair comes down and
-    -- the new one is built around this window.
+    -- The pair goes where the jump landed. Taken over in place, it opens
+    -- now: nothing splits, and deferring would draw a frame of the new file
+    -- against the old merge base.
     local win = vim.api.nvim_get_current_win()
-    -- A pair the entered file can take over rebuilds right now, in this
-    -- BufEnter: nothing splits, so none of the reasons to wait apply, and
-    -- waiting is visible — the deferred rebuild lets the screen draw the new
-    -- file beside the *previous* file's merge base first, one frame of a
-    -- diff against the wrong side.
     if pairview.reusable(pair, session.entries[idx], win) then
       return M.open(idx, win)
     end
-    -- Otherwise deferred one tick: this BufEnter may be firing mid-:close
-    -- (focus falling back into a changed file's window), and the pair's
-    -- split is illegal while another window is closing (E242).
+    -- Otherwise deferred: this may be mid-:close, and splitting then is
+    -- illegal (E242).
     local s = session
     vim.schedule(function()
       if session ~= s then return end
@@ -241,11 +196,9 @@ local function follow_navigation()
   end
 end
 
--- Everything a session needs from git, resolved without touching the one
--- that may be running: a range that goes nowhere must leave the review on
--- screen alone. `range` is '<base>...<head>', a bare '<base>' (head
--- defaults to HEAD), or empty for <trunk>...HEAD. Returns a plan, or nil
--- plus a message and its level.
+-- Everything a session needs from git, resolved without touching a running
+-- one. `range` is '<base>...<head>', '<base>' (head HEAD) or empty (trunk).
+-- Returns a plan, or nil plus a message and its level.
 local function resolve(range)
   local ERROR = vim.log.levels.ERROR
   local base, head
@@ -358,11 +311,8 @@ function M.review(range)
     callback = follow_navigation,
   })
 
-  -- The pinned panel's other half: a window closing under it — :q, CTRL-W_c,
-  -- :only, a window-management plugin tidying up — puts it straight back.
-  -- Deferred one tick because splitting while another window is closing is
-  -- illegal (E242), and guarded on the session still being this one, so the
-  -- close that ends the session never resurrects what it just destroyed.
+  -- The pinned panel comes back when its window closes. Deferred (E242),
+  -- and only for this session, so the closing one can't resurrect it.
   vim.api.nvim_create_autocmd('WinClosed', {
     group = AUGROUP,
     callback = function(args)
@@ -374,9 +324,8 @@ function M.review(range)
     end,
   })
 
-  -- The notes layer: existing comments for this branch load here, so
-  -- multi-sitting reviews and orca's resolutions show up immediately.
-  -- Every notes save refreshes the panel, keeping comment counts live.
+  -- Earlier comments and orca's resolutions load here; every notes save
+  -- refreshes the panel's counts.
   local loaded = notes.start({ root = root, toplevel = toplevel, range = session.range,
     head = head, on_change = refresh_panel })
 
@@ -395,9 +344,7 @@ function M.review(range)
     hints[#hints + 1] = (next_key or prev_key or ':OrcaReviewNext') .. ' moves'
   end
   hints[#hints + 1] = (k:key_of('comment') or ':OrcaComment') .. ' comments a line'
-  -- Hiding is never silent: when a group folded anything away, the count
-  -- and the way back are in the line that opens the session, whether or
-  -- not the `hidden` action is bound to a key.
+  -- Hiding is never silent: the count and the way back are in this line.
   local view = session.view
   if view.n > 0 then
     hints[#hints + 1] = ('%s %s'):format(k:key_of('hidden') or '<CR> on the … row',
@@ -425,14 +372,9 @@ M.open = with_session(function(idx, win)
   session.index = idx
   local entry = session.entries[idx]
 
-  -- The pair on screen is handed to the new one rather than torn down, when
-  -- the entry can take it over: swapping its two buffers is what keeps the
-  -- layout from reflowing — and the working-tree file from being re-read —
-  -- every time a jump lands in a changed file. A pair the new entry cannot
-  -- use (the user took one of its windows, or this entry is binary and wants
-  -- no split) comes down the old way first. All of it is protected, the
-  -- teardown included: session.navigating must come back down whatever
-  -- throws, or the navigation follower stays off for good.
+  -- The pair on screen is taken over when the entry can use it, else torn
+  -- down first. All of it is protected, teardown included: navigating must
+  -- come back down whatever throws, or the follower stays off for good.
   local ok, pair, err = pcall(function()
     local old = session.pair
     session.pair = nil
@@ -482,10 +424,8 @@ M.open_row = with_session(function(row)
   M.toggle_hidden()
 end)
 
--- Move count files forward/back (default 1) through the panel's view:
--- what the groups folded away is not something the walk stops on. At the
--- edge, a polite message; a count that would overshoot clamps to the edge
--- instead of erroring.
+-- Move count files forward/back through the panel's rows (hidden files are
+-- skipped). An overshooting count clamps; at the edge, a message.
 local walk = with_session(function(dir, count)
   local rows = session.view.rows
   local pos
@@ -505,10 +445,8 @@ end)
 function M.next(count) walk(1, count) end
 function M.prev(count) walk(-1, count) end
 
--- The hidden-groups toggle: <CR> on the panel's summary row, the `hidden`
--- mapping action, and this function for anyone driving orca from their own
--- keymap layer. There is no command — like `open`, this is an action on
--- the panel, and the row is always there to carry it.
+-- The hidden-groups toggle, behind the summary row's <CR> and the `hidden`
+-- action. No command, by design: :help orca-hidden.
 M.toggle_hidden = with_session(function()
   session.hidden = not session.hidden
   refresh_panel()
@@ -522,13 +460,8 @@ M.toggle_hidden = with_session(function()
     or ('showing all %d files'):format(#session.entries))
 end)
 
--- The panel's focus ladder — one function behind both :OrcaReviewPanel and
--- the `panel` mapping action: not there → open and focus; there but
--- unfocused → focus; focused → back to the diff. That last rung used to
--- close the window, which a pinned panel has no use for: with the panel
--- always on screen the round trip is what the key is for, and pressing it
--- twice leaves you where you started. vim.g.orca_panel_pinned = false puts
--- the close back.
+-- The focus ladder behind :OrcaReviewPanel: not there → open and focus;
+-- unfocused → focus; focused → back to the diff (or, unpinned, close).
 M.panel = with_session(function()
   local win = panel.win()
   if not win then
@@ -546,10 +479,8 @@ M.panel = with_session(function()
   end
 end)
 
--- Review-wide comment walk. Comments are orca's own extmarks — nothing
--- native can find them — so orca walks them itself: file order (the
--- session's), then line, crossing files through M.open. Lines come from
--- notes.locations(), extmark-resolved, so positions self-heal after edits.
+-- Review-wide comment walk: file order, then line, crossing files through
+-- M.open. Lines are extmark-resolved, so they follow edits.
 local comment_walk = with_session(function(dir)
   local locs = {}
   for _, l in ipairs(notes.locations()) do
@@ -597,10 +528,9 @@ end)
 function M.comment_next() comment_walk(1) end
 function M.comment_prev() comment_walk(-1) end
 
--- The anchor for :OrcaComment — the current buffer must be the working-
--- tree (right) side of a changed text file. The left side is a base-
--- version scratch ("this deletion was wrong" has no working-tree anchor —
--- v1 punts), and deleted/binary entries have no commentable right side.
+-- The anchor for :OrcaComment: the current buffer must be the working-tree
+-- side of a changed text file — not a merge-base scratch, a deleted file
+-- or a binary one.
 local comment_target = with_session(function()
   local buf = vim.api.nvim_get_current_buf()
   local _, entry = entry_of(buf)
@@ -611,10 +541,8 @@ local comment_target = with_session(function()
   return entry.path, buf
 end)
 
--- Create or edit the review comment on the given line(s) of the current
--- buffer: normal mode anchors the cursor line, a visual range the whole
--- selection; on an already-commented line the existing comment opens for
--- editing. The editor is the comment — what you type is saved as you type.
+-- Create the comment on line1..line2 of the current buffer, or edit the one
+-- already covering line1.
 function M.comment(line1, line2)
   local path, buf = comment_target()
   if not path then return end
@@ -632,10 +560,8 @@ function M.comment_delete()
   if path then notes.delete(path, vim.fn.line('.')) end
 end
 
--- End the session: notes saved and their extmarks cleared, diff pair torn
--- down, panel destroyed, scratch buffers wiped, keymaps removed (the
--- session's global ones handed back to whatever they meant before), augroup
--- cleared. The one survivor is the notes file — persisting is its job.
+-- End the session. Everything it made goes, and every key it took goes
+-- back; the notes file stays.
 function M.close()
   if not session then return end
   -- First, so that nothing in the teardown below — a window closing, a

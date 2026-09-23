@@ -1,23 +1,7 @@
--- The review panel: the session's changed-file list in a buffer orca owns.
--- The quickfix list it replaces was shared territory — any :grep or LSP
--- reference push evicted the review from the display — while nothing
--- external writes into an orca-owned buffer, so the list survives
--- everything short of :OrcaReviewClose. Owning the buffer also buys what
--- the qf `text` column capped out on: highlighted status letters, a
--- full-line current-file mark, per-file comment counts, and each file's
--- `+n -n` line counts held against the window's right edge.
---
--- One scratch buffer (orca://review), one window at most. The window is a
--- bottom strip — the qf window's exact footprint, so diff pairs keep full
--- width. Closing the window only hides the view; the buffer (and the
--- session behind it) survive for :OrcaReviewPanel to bring back. Only
--- teardown(), at session close, destroys anything.
---
--- What the panel shows is a *view* over the session's entries (see
--- orca/filter.lua): rows carry entry indices, and the last row — the one
--- row that is not a file — reports what the hidden groups folded away and
--- toggles them back. The count is always on screen, so a review never
--- omits anything quietly.
+-- The review panel (:help orca-panel): one buffer orca owns, orca://review,
+-- in at most one bottom-strip window. Its rows are a view (filter.view) —
+-- entry indices, then a summary row for what the groups hid. The buffer
+-- outlives its window; only teardown() destroys it.
 
 local M = {}
 
@@ -60,13 +44,9 @@ local function entry_line(e, count, width)
   return (' %s%s %s'):format(e.status, counts_col, name)
 end
 
--- The `+n -n` line counts for one entry, as virt_text chunks. Both sides
--- always show, `+0` and `-0` included: a file that only grows reads as
--- `+100 -0`, and the zero is the statement — the eye scanning the column
--- never has to work out whether a blank means nothing or means nothing
--- shown. Only a binary file, where git counts no lines at all, returns
--- nil and leaves the margin empty. Widths come from the widest token on
--- show, so the two columns stack down the panel instead of ragging.
+-- The `+n -n` line counts for one entry, as virt_text chunks padded to the
+-- column widths, zeros included. nil for a binary file, which git counts no
+-- lines in.
 local function diffstat(e, aw, dw)
   if not (e.added or e.deleted) then return nil end
   local function pad(tok, w) return (' '):rep(w - #tok) .. tok end
@@ -90,10 +70,8 @@ local function breakdown(view)
   return table.concat(parts, ', ')
 end
 
--- The summary row, present whenever a group claims anything at all. It
--- states what is missing and what <CR> on it will do — in both states, so
--- the toggle is discoverable from the panel alone and the hidden set is
--- never a thing you have to already know about.
+-- The summary row's text, in both states: what is hidden, and what <CR>
+-- on it does.
 function M.summary(view)
   if view.hidden then
     return ('%d file%s hidden (%s) — <CR> shows'):format(
@@ -114,10 +92,8 @@ local function height(view)
   return #view.rows + (view.n > 0 and 1 or 0)
 end
 
--- Re-render everything: lines, status-letter highlights, the current-file
--- line mark, the [n] comment counts, and the summary row. Cheap enough (a
--- screenful of short lines) that partial updates are not worth their
--- bookkeeping.
+-- Re-render everything. A screenful of short lines: partial updates are not
+-- worth their bookkeeping.
 local function render(entries, index, counts, view)
   local buf = state.buf
   -- The count columns start at 2 — the width of `+0`, which every
@@ -155,12 +131,8 @@ local function render(entries, index, counts, view)
         hl_group = 'OrcaPanelCount',
       })
     end
-    -- The line counts ride the window's right edge as virt_text rather
-    -- than buffer text: the panel is as wide as the window, which the
-    -- user resizes, and right_align re-places them on every redraw for
-    -- free. In a panel narrow enough for a name to reach them they cover
-    -- its tail — the full-width bottom strip makes that rare, and the
-    -- alternative is a name that pushes the counts off the screen.
+    -- Right-aligned virt_text, so a window resize re-places them for free.
+    -- A long enough name gets its tail covered rather than pushing them off.
     local stat = diffstat(e, aw, dw)
     if stat then
       vim.api.nvim_buf_set_extmark(buf, NS, r - 1, 0, {

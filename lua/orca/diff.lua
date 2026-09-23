@@ -1,8 +1,5 @@
--- The side-by-side pair for one reviewed file: the real working-tree buffer
--- on the right (LSP attaches, editable — fixing nits during review is a
--- feature), the merge-base content in a scratch buffer on the left, native
--- diff mode on both. Scratch buffers are nofile + bufhidden=wipe, so however
--- a pair goes away, no trace survives it.
+-- One reviewed file's diff pair: the working-tree buffer on the right, the
+-- merge base in a nofile, bufhidden=wipe scratch on the left.
 
 local git = require('orca.git')
 
@@ -22,11 +19,8 @@ local function scratch_buf(name, lines, ft)
   return buf
 end
 
--- :edit the file into the current window — unless it is already the buffer
--- there, which is the common case when a jump *into* a changed file is what
--- opened this pair. Re-reading it would throw away the syntax state, folds
--- and cursor the user is looking at, and would fail outright (E37) on a
--- working-tree side they have edited but not written.
+-- :edit the file into the current window, unless it is already there: a
+-- re-read loses the view, and fails (E37) over unwritten changes.
 local function edit(path)
   local buf = vim.api.nvim_get_current_buf()
   if vim.api.nvim_buf_get_name(buf) == path then return buf end
@@ -35,10 +29,8 @@ local function edit(path)
   return vim.api.nvim_get_current_buf()
 end
 
--- Can `pair` be handed straight to `entry`, or does it have to come down
--- first? Reuse needs both its windows still orca's — the user may have put
--- their own buffer in either side — and an entry of the same shape: a
--- binary entry has no merge-base side at all, so that split has to go.
+-- Can `pair` be handed straight to `entry`? Only with both its windows still
+-- showing orca's buffers, and an entry that wants a left side (not binary).
 function M.reusable(pair, entry, win)
   if not (pair and entry and win) or entry.binary then return false end
   if pair.right_win ~= win or not vim.api.nvim_win_is_valid(win) then return false end
@@ -47,12 +39,10 @@ function M.reusable(pair, entry, win)
     and vim.tbl_contains(pair.scratch, vim.api.nvim_win_get_buf(lw))
 end
 
--- Show `entry`'s diff pair, with the right side in `win`. When `old` is a
--- pair M.reusable() has cleared for this entry, it is taken over rather than
--- rebuilt: the two windows stay and only their buffers change. Nothing
--- closes, nothing opens, the layout never reflows — which is the difference
--- between following a jump and flickering through one. Returns a pair record
--- { bufs, scratch, left_win, right_win }, or nil plus a message.
+-- Show `entry`'s diff pair, right side in `win`. An `old` pair M.reusable()
+-- cleared is taken over — its windows keep, only their buffers change, so
+-- nothing reflows. Returns { bufs, scratch, left_win, right_win }, or nil
+-- plus a message.
 function M.open(entry, mergebase, toplevel, win, old)
   vim.api.nvim_set_current_win(win)
   local abs = toplevel .. '/' .. entry.path
@@ -126,19 +116,9 @@ function M.open(entry, mergebase, toplevel, win, old)
   return { bufs = { left, right }, scratch = scratch, left_win = left_win, right_win = win }
 end
 
--- Take `pair` out of diff mode — with the bang, which is the whole point.
--- Diff mode is not just the windows' 'diff' flag: the tab page keeps a list
--- of the buffers taking part, and every window with 'diff' set compares
--- against all of them. Plain `:diffoff` unregisters the window's *current*
--- buffer, and by teardown time that is often no longer the pair's: the user
--- navigated the right window somewhere else (an LSP jump, CTRL-O), and
--- Neovim cleared that window's 'diff' on the swap without ever taking the
--- working-tree buffer off the list. The ghost then joins the *next* pair's
--- comparison as a third buffer, which agrees with neither side, so every
--- line of the new file reads as changed. `:diffoff!` empties the tab page's
--- list outright (`:h :diffoff`) — the only route back to a clean slate.
--- It resets 'diff' tab-page-wide, which is orca's to reset: a foreign diff
--- sharing the tab was already being compared against the pair's buffers.
+-- Take `pair` out of diff mode with :diffoff!, which empties the tab page's
+-- diff buffer list. Plain :diffoff misses a buffer a jump swapped out of a
+-- pair window, and that ghost joins the next pair's diff as a third side.
 function M.diffoff(pair)
   for _, key in ipairs({ 'left_win', 'right_win' }) do
     local w = pair[key]
@@ -148,22 +128,18 @@ function M.diffoff(pair)
   end
 end
 
--- Tear a pair down: diff mode off, the left split closed (closing it wipes
--- its scratch buffer), any scratch still displayed wiped explicitly. The
--- right window survives as the target for the next pair. A window the user
--- already stole for another buffer (`:edit` in a pair split) is only
--- diffoff'd, never closed — the buffer they navigated to must stay visible.
+-- Tear a pair down: diff off, the left split closed, scratches wiped. The
+-- right window survives for the next pair, and a window the user put their
+-- own buffer in is never closed.
 function M.close(pair)
   M.diffoff(pair)
   if pair.left_win and vim.api.nvim_win_is_valid(pair.left_win)
     and vim.tbl_contains(pair.scratch, vim.api.nvim_win_get_buf(pair.left_win)) then
     pcall(vim.api.nvim_win_close, pair.left_win, true)
   end
-  -- A deleted file's "right side" is a scratch too, and wiping a displayed
-  -- buffer closes its window — but the right window must survive as the
-  -- next pair's anchor (with only the panel left, the layout collapses and
-  -- the panel balloons to fill the screen). Park a throwaway buffer in it
-  -- first; the next :edit into the window wipes the placeholder.
+  -- A deleted file's right side is a scratch too, and wiping a displayed
+  -- buffer closes its window: park a placeholder there first, so the window
+  -- survives and the panel doesn't balloon into the space.
   if pair.right_win and vim.api.nvim_win_is_valid(pair.right_win)
     and vim.tbl_contains(pair.scratch, vim.api.nvim_win_get_buf(pair.right_win)) then
     local placeholder = vim.api.nvim_create_buf(false, true)

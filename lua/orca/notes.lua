@@ -1,13 +1,6 @@
--- Review notes for orca.nvim: line-anchored comments that persist to
--- .orca/review-notes/<key>.json and flow back into the orca run — the
--- addressing step converts open comments to findings, fixes them, and
--- writes status/resolution into the same file for the next session to show.
---
--- The session's source of truth is extmarks, so anchors ride buffer edits
--- (fixing nits mid-review is a feature); every mutation rewrites the whole
--- file from their current positions — a crash loses nothing. The file is
--- versioned: it is the plugin↔skill coordination contract (the two ship
--- separately), and either side refuses a version it doesn't know.
+-- Review notes (:help orca-notes): line-anchored comments, extmarks while a
+-- session lives, persisted whole to .orca/review-notes/<key>.json. The file
+-- is the versioned contract with orca's skills; unknown versions are refused.
 
 local git = require('orca.git')
 local notify = require('orca.util').notify
@@ -382,12 +375,9 @@ local function spacers(n)
   return lines
 end
 
--- Editor-grid position for the input float: the first virt_line row under
--- `line` in `win` (the line's own wrapped rows counted via text_height,
--- its virt_lines excluded), col just past the '┃ ' the spacers draw.
--- `bufpos` can't do this — it resolves to the line's *first* screen row,
--- so a soft-wrapped anchor would put the float on its own continuation
--- rows. nil when the anchor is scrolled out of view.
+-- Editor-grid position of the first virt_line row under `line` in `win`,
+-- past the '┃ ' prefix; nil when scrolled out of view. Not `bufpos`: that is
+-- the line's first screen row, wrong for a soft-wrapped anchor.
 local function float_pos(win, line)
   if not vim.api.nvim_win_is_valid(win) then return nil end
   local sp = vim.fn.screenpos(win, line, 1)
@@ -396,12 +386,9 @@ local function float_pos(win, line)
   return sp.row - 1 + th.all - th.fill, sp.col - 1 + vim.fn.strdisplaywidth('┃ ')
 end
 
--- The comment editor edits the comment itself; there is no commit step.
--- Text reaches the comment as it is typed, and the notes file shortly
--- after (SAVE_DELAY), on leaving insert mode, on :w, and on close. A
--- comment that doesn't exist yet is a draft: it has its extmark — its
--- anchor — from the start, but takes an id and a place in state.comments
--- only with its first words, so an editor closed empty leaves nothing.
+-- The comment editor edits the comment itself, saved as typed. A new comment
+-- is a draft — its extmark from the start, but an id and a place in
+-- state.comments only with its first words.
 
 local SAVE_DELAY = 500
 
