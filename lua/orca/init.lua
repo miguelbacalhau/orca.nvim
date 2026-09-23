@@ -132,10 +132,19 @@ local function key_of(maps, action)
   return keys and keys[1]
 end
 
+-- Map `lhs` in `buf`, remembering what the buffer itself had on it — only
+-- the first time: a re-assert would otherwise record orca's own map as the
+-- one to give back.
 local function buf_map(buf, lhs, rhs, desc, mode)
-  vim.keymap.set(mode or 'n', lhs, rhs, { buffer = buf, nowait = true, desc = desc })
+  mode = mode or 'n'
   session.mapped[buf] = session.mapped[buf] or {}
-  session.mapped[buf][lhs] = true
+  local key = mode .. lhs
+  if session.mapped[buf][key] == nil then
+    local prev = vim.api.nvim_buf_call(buf, function() return vim.fn.maparg(lhs, mode, false, true) end)
+    session.mapped[buf][key] = { mode = mode, lhs = lhs,
+      prev = (type(prev) == 'table' and prev.buffer == 1) and prev or false }
+  end
+  vim.keymap.set(mode, lhs, rhs, { buffer = buf, nowait = true, desc = desc })
 end
 
 local function attach_maps(buf)
@@ -185,11 +194,15 @@ local function detach_globals()
   session.globals = {}
 end
 
+-- Hand a buffer's keys back as they were found, the way detach_globals
+-- does for the global ones. mapset() sets a buffer-local dict in the
+-- current buffer, hence the buf_call.
 local function detach_maps(buf)
   if vim.api.nvim_buf_is_valid(buf) then
-    for lhs in pairs(session.mapped[buf] or {}) do
-      for _, mode in ipairs({ 'n', 'x' }) do
-        pcall(vim.keymap.del, mode, lhs, { buffer = buf })
+    for _, m in pairs(session.mapped[buf] or {}) do
+      pcall(vim.keymap.del, m.mode, m.lhs, { buffer = buf })
+      if m.prev then
+        vim.api.nvim_buf_call(buf, function() pcall(vim.fn.mapset, m.mode, false, m.prev) end)
       end
     end
   end

@@ -1226,6 +1226,32 @@ check(count_diff_wins() == 2, 'mappings = false: navigation follower still opens
 orca.close()
 vim.g.orca_mappings = nil
 
+-- A buffer's own mapping on a key orca borrows is handed back as it was
+-- found: orca maps `comment` buffer-locally in the pair it opens, and used
+-- to delete the key on the way out, taking the user's map with it.
+vim.cmd('edit src/b.lua')
+local own_buf = vim.api.nvim_get_current_buf()
+vim.keymap.set('n', '<leader>m', '<Cmd>let g:orca_own = 1<CR>', { buffer = own_buf, desc = 'my own' })
+vim.g.orca_mappings = { comment = '<leader>m' }
+orca.review('')
+orca.open(idx_of('src/b%.lua'))
+local in_pair = vim.api.nvim_buf_call(own_buf, function() return vim.fn.maparg('\\m', 'n', false, true) end)
+check(in_pair.desc == 'orca: comment on this line', 'orca borrows the key while the pair is up')
+orca.next()
+local own = function()
+  return vim.api.nvim_buf_call(own_buf, function() return vim.fn.maparg('\\m', 'n', false, true) end)
+end
+check(own().desc == 'my own' and own().buffer == 1,
+  'moving on hands the buffer its own map back, got ' .. tostring(own().desc))
+orca.open(idx_of('src/b%.lua'))
+orca.close()
+check(own().desc == 'my own' and own().buffer == 1,
+  'and so does closing the session, got ' .. tostring(own().desc))
+check(vim.api.nvim_buf_call(own_buf, function() return vim.fn.maparg('\\m', 'x') end) == '',
+  'while the visual-mode map orca added is simply gone')
+vim.keymap.del('n', '<leader>m', { buffer = own_buf })
+vim.g.orca_mappings = nil
+
 -- ==================== hidden groups ====================
 
 -- Hiding is a view over the entry list, not a filter on it: the folded
