@@ -58,6 +58,15 @@ if has_float then
     'float grows to the text height, got ' .. vim.api.nvim_win_get_height(fwin))
   check(#first_mark()[4].virt_lines == 4,
     'spacer count grows in lockstep, got ' .. #first_mark()[4].virt_lines)
+  -- The gap is above the anchor, and grows upward: the float's bottom row
+  -- stays on the anchor line's doorstep whatever its height.
+  local function float_bottom_ok()
+    local cfg = vim.api.nvim_win_get_config(fwin)
+    local row = type(cfg.row) == 'table' and cfg.row[false] or cfg.row
+    return row + vim.api.nvim_win_get_height(fwin) == vim.fn.screenpos(fsrc_win, 2, 1).row - 1
+  end
+  check(first_mark()[4].virt_lines_above and float_bottom_ok(),
+    'the float fills the gap right above the anchor line, bottom row on its doorstep')
 
   -- Closing puts the real virt_lines back, with the text as it now stands.
   commit()
@@ -65,6 +74,38 @@ if has_float then
   for _, vl in ipairs(first_mark()[4].virt_lines or {}) do restored[#restored + 1] = vl[1][1] end
   check(table.concat(restored, '\n'):find('gamma', 1, true) ~= nil,
     'closing restores real virt_lines with the edited text')
+
+  -- A comment is drawn above the line it is about, so the line right under
+  -- it is its anchor — where the cursor lands, and where the comment key
+  -- opens it again. It used to hang below, and editing it meant going to the
+  -- line above the comment.
+  vim.cmd('redraw')
+  local function screen_line(row)
+    local l = {}
+    for col = 1, vim.o.columns do l[#l + 1] = vim.fn.screenstring(row, col) end
+    return table.concat(l)
+  end
+  local anchor_row = vim.fn.screenpos(fsrc_win, 2, 1).row
+  check(screen_line(anchor_row - 1):find('#1 grown alpha', 1, true) == nil
+    and screen_line(anchor_row - 4):find('┃ #1 grown alpha', 1, true) ~= nil
+    and screen_line(anchor_row):find('line2 CHANGED', 1, true) ~= nil,
+    'the comment renders above its line, which sits right under it, got [' ..
+      screen_line(anchor_row - 4) .. ']')
+
+  -- The anchor at the window's top edge — the file's first line included —
+  -- would hide a gap above it; opening the editor scrolls it into view
+  -- rather than falling back to the split.
+  vim.api.nvim_win_set_cursor(fsrc_win, { 1, 0 })
+  vim.cmd('normal! zt')
+  vim.cmd('OrcaComment')
+  fwin = vim.api.nvim_get_current_win()
+  check(vim.api.nvim_win_get_config(fwin).relative == 'editor',
+    'a comment on the first line still opens in the float')
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'on top' })
+  commit()
+  check(#vim.api.nvim_buf_get_extmarks(fsrc_buf, NS, 0, -1, {}) == 2, 'and is saved')
+  vim.api.nvim_win_set_cursor(fsrc_win, { 1, 0 })
+  vim.cmd('OrcaCommentDelete')
 
   -- Leaving the float for the file is being done with it. It used to stay
   -- open over the gap, so the comment kept showing as the float's bare

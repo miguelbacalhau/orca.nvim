@@ -71,7 +71,7 @@ local function wrap_width(buf)
   return math.max(text_width - vim.fn.strdisplaywidth('┃ '), 1)
 end
 
--- Virtual lines rendered under the anchor: the comment text, then orca's
+-- Virtual lines rendered above the anchor: the comment text, then orca's
 -- resolution once the addressing step has written one back. Wrapping is
 -- display-only, recomputed at every placement — stored text is untouched,
 -- and user-authored line breaks stay paragraph breaks (each stored line
@@ -127,6 +127,9 @@ local function set_mark(buf, id, line, end_line, virt_lines)
     sign_text = '┃',
     sign_hl_group = 'OrcaCommentSign',
     virt_lines = virt_lines,
+    -- Above the line it is about, so the line right under a comment is its
+    -- anchor: where the cursor lands, and where the comment key edits it.
+    virt_lines_above = true,
   }
   if end_line and end_line > line then
     -- Ranged: the sign renders on every spanned line (0.10+ decoration
@@ -375,15 +378,30 @@ local function spacers(n)
   return lines
 end
 
--- Editor-grid position of the first virt_line row under `line` in `win`,
--- past the '┃ ' prefix; nil when scrolled out of view. Not `bufpos`: that is
--- the line's first screen row, wrong for a soft-wrapped anchor.
-local function float_pos(win, line)
+-- Editor-grid position of an `h`-row gap above `line` in `win`, past the
+-- '┃ ' prefix; nil when any of it is scrolled out of view. Above a line, the
+-- virt_lines come first and diff filler sits between them and the text.
+local function float_pos(win, line, h)
   if not vim.api.nvim_win_is_valid(win) then return nil end
   local sp = vim.fn.screenpos(win, line, 1)
   if sp.row == 0 then return nil end
-  local th = vim.api.nvim_win_text_height(win, { start_row = line - 1, end_row = line - 1 })
-  return sp.row - 1 + th.all - th.fill, sp.col - 1 + vim.fn.strdisplaywidth('┃ ')
+  local filler = vim.api.nvim_win_call(win, function() return vim.fn.diff_filler(line) end)
+  local row = sp.row - 1 - filler - h
+  if row < vim.fn.win_screenpos(win)[1] - 1 then return nil end
+  return row, sp.col - 1 + vim.fn.strdisplaywidth('┃ ')
+end
+
+-- Lines above the window's top line show only as its 'topfill'. When the
+-- anchor is that line, scroll the gap in, so it has somewhere to be edited.
+local function reveal_gap(win, line, h)
+  if not vim.api.nvim_win_is_valid(win) then return end
+  vim.api.nvim_win_call(win, function()
+    local view = vim.fn.winsaveview()
+    if view.topline == line then
+      view.topfill = vim.fn.diff_filler(line) + h
+      vim.fn.winrestview(view)
+    end
+  end)
 end
 
 -- The comment editor edits the comment itself, saved as typed. A new comment
@@ -502,12 +520,28 @@ local function float_open(e, from, row, col)
   vim.wo[win].winhighlight = 'Normal:OrcaCommentText,NormalFloat:OrcaCommentText'
   -- text_height on the float is the exact display height of the text at
   -- this width — no reimplementation of the wrap algorithm.
+  -- The gap grows upward from the anchor, so the float's row moves with
+  -- its height.
+  -- `reveal` only when the gap itself changes: a scroll is the user's.
+  local function place_float(reveal)
+    if not (vim.api.nvim_win_is_valid(win) and live(c)) then return end
+    local h = vim.api.nvim_win_get_height(win)
+    local line = mark_line(c.buf, c.mark)
+    if reveal then reveal_gap(from, line, h) end
+    local r, cl = float_pos(from, line, h)
+    if r then
+      vim.api.nvim_win_set_config(win, { relative = 'editor', row = r, col = cl, hide = false })
+    else
+      vim.api.nvim_win_set_config(win, { hide = true })
+    end
+  end
   local function fit()
     if not (vim.api.nvim_win_is_valid(win) and live(c)) then return end
     local h = vim.api.nvim_win_text_height(win, {}).all
     vim.api.nvim_win_set_height(win, h)
     sync(c)
     c.mark = set_mark(c.buf, c.mark, c.line, c.end_line, spacers(h))
+    place_float(true)
   end
   state.gap = c
   fit()
@@ -535,15 +569,7 @@ local function float_open(e, from, row, col)
   e.scroll = vim.api.nvim_create_autocmd('WinScrolled', {
     group = 'orca-notes',
     pattern = tostring(from),
-    callback = function()
-      if not (vim.api.nvim_win_is_valid(win) and live(c)) then return end
-      local r, cl = float_pos(from, mark_line(c.buf, c.mark))
-      if r then
-        vim.api.nvim_win_set_config(win, { relative = 'editor', row = r, col = cl, hide = false })
-      else
-        vim.api.nvim_win_set_config(win, { hide = true })
-      end
-    end,
+    callback = function() place_float(false) end,
   })
   return win
 end
@@ -560,7 +586,10 @@ M.float_input = vim.fn.has('nvim-0.10') == 1
 local function input(title, c)
   local from = vim.api.nvim_get_current_win()
   local row, col
-  if M.float_input then row, col = float_pos(from, c.line) end
+  if M.float_input then
+    reveal_gap(from, c.line, 1)
+    row, col = float_pos(from, c.line, 1)
+  end
   local win, buf
   if not row then
     -- 0.9, or an anchor with no screen position: the split fallback.

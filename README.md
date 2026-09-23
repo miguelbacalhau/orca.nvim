@@ -155,7 +155,7 @@ The round trip: you comment, orca's addressing step converts each `open` comment
 to a finding (severity High — if you bothered to write it, it matters), runs the
 fix machinery, and writes `status` (`addressed` | `answered`) plus a `resolution`
 note back into the same file. The next `:OrcaReview` shows resolutions inline
-under each anchor. Comments are right-side only in v1 — the left buffer is a
+above each anchor. Comments are right-side only in v1 — the left buffer is a
 base-version scratch with no working-tree anchor.
 
 ## Keymaps
