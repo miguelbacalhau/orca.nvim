@@ -354,8 +354,10 @@ local function teardown_pair()
   session.pair = nil
   local was = session.navigating
   session.navigating = true
-  release_pair(pair)
-  pairview.close(pair)
+  pcall(function()
+    release_pair(pair)
+    pairview.close(pair)
+  end)
   session.navigating = was
 end
 
@@ -606,17 +608,20 @@ function M.open(idx, win)
   -- layout from reflowing — and the working-tree file from being re-read —
   -- every time a jump lands in a changed file. A pair the new entry cannot
   -- use (the user took one of its windows, or this entry is binary and wants
-  -- no split) comes down the old way first.
-  local old = session.pair
-  session.pair = nil
-  if old then release_pair(old) end
-  if not usable(win) then win = pick_window() end
-  if old and not pairview.reusable(old, entry, win) then
-    pairview.close(old)
-    old = nil
-  end
-
-  local ok, pair, err = pcall(pairview.open, entry, session.mergebase, session.toplevel, win, old)
+  -- no split) comes down the old way first. All of it is protected, the
+  -- teardown included: session.navigating must come back down whatever
+  -- throws, or the navigation follower stays off for good.
+  local ok, pair, err = pcall(function()
+    local old = session.pair
+    session.pair = nil
+    if old then release_pair(old) end
+    if not usable(win) then win = pick_window() end
+    if old and not pairview.reusable(old, entry, win) then
+      pairview.close(old)
+      old = nil
+    end
+    return pairview.open(entry, session.mergebase, session.toplevel, win, old)
+  end)
   session.navigating = false
   if not ok then pair, err = nil, pair end
   if not pair then

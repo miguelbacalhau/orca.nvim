@@ -499,6 +499,26 @@ check(not (vim.api.nvim_win_is_valid(old_right) and vim.wo[old_right].diff)
 vim.cmd('only')
 drain(function() return panel_win() ~= nil end)
 
+-- A failed open must not switch the navigation follower off. M.open
+-- raises session.navigating while it rebuilds, and an error thrown while
+-- the old pair came down skipped the reset: every later jump into a changed
+-- file was ignored for the rest of the session.
+orca.open(idx_of('c%.txt'))
+local pv = require('orca.diff')
+local real_close = pv.close
+pv.close = function()
+  pv.close = real_close
+  error('teardown failed')
+end
+pcall(orca.open, idx_of('img%.bin')) -- binary: the c.txt pair has to come down
+pv.close = real_close
+vim.cmd('only')
+drain(function() return panel_win() ~= nil end)
+vim.cmd('edit src/b.lua')
+drain(function() return count_diff_wins() == 2 end)
+check(count_diff_wins() == 2 and panel_cur() == idx_of('src/b%.lua'),
+  'after an open that threw, the next :edit of a changed file still gets its pair')
+
 -- Leaving a deleted-file pair must not mangle the layout: its right side
 -- is a scratch too, and wiping a displayed scratch closes its window —
 -- which left the panel as the last window standing, ballooned to fill the
