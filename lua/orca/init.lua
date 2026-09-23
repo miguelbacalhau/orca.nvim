@@ -339,12 +339,12 @@ local function ensure_panel()
   end
 end
 
--- Hand the pair on screen back: its maps detached and `session.last_win`
--- left pointing at the window it held, so the next pair lands where this one
--- was. Clearing `session.pair` is the caller's — M.open lets go of the
--- record here and then offers it to pairview.open as the one to take over.
+-- Hand the pair on screen back: its maps detached. Clearing `session.pair`
+-- is the caller's — M.open lets go of the record here and then offers it to
+-- pairview.open as the one to take over. Where the next pair goes is not
+-- decided here: `session.last_win` is set by the open that built this one,
+-- and a jump names its own window.
 local function release_pair(pair)
-  session.last_win = pair.right_win
   for _, buf in ipairs(pair.bufs) do detach_maps(buf) end
 end
 
@@ -364,13 +364,14 @@ end
 -- Never the panel (by id — its buffer is nofile like the pair's scratch
 -- side) and never a quickfix window (a foreign :grep list may be open
 -- mid-session, and its window must stay the user's).
+local function usable(w)
+  return w and vim.api.nvim_win_is_valid(w)
+    and vim.api.nvim_win_get_config(w).relative == ''
+    and w ~= panel.win()
+    and vim.bo[vim.api.nvim_win_get_buf(w)].buftype ~= 'quickfix'
+end
+
 local function pick_window()
-  local function usable(w)
-    return w and vim.api.nvim_win_is_valid(w)
-      and vim.api.nvim_win_get_config(w).relative == ''
-      and w ~= panel.win()
-      and vim.bo[vim.api.nvim_win_get_buf(w)].buftype ~= 'quickfix'
-  end
   if usable(session.last_win) then return session.last_win end
   local cur = vim.api.nvim_get_current_win()
   if usable(cur) then return cur end
@@ -420,14 +421,17 @@ local function follow_navigation()
     -- a binary "pair" is a plain :edit of the very buffer just entered,
     -- and reopening it here would loop open → BufEnter → open.
     if idx == session.index and pair then return end
-    session.last_win = vim.api.nvim_get_current_win()
+    -- The pair goes where the jump landed. A window that is not the pair's
+    -- own right side cannot be taken over, so the old pair comes down and
+    -- the new one is built around this window.
+    local win = vim.api.nvim_get_current_win()
     -- A pair the entered file can take over rebuilds right now, in this
     -- BufEnter: nothing splits, so none of the reasons to wait apply, and
     -- waiting is visible — the deferred rebuild lets the screen draw the new
     -- file beside the *previous* file's merge base first, one frame of a
     -- diff against the wrong side.
-    if pairview.reusable(pair, session.entries[idx], session.last_win) then
-      return M.open(idx)
+    if pairview.reusable(pair, session.entries[idx], win) then
+      return M.open(idx, win)
     end
     -- Otherwise deferred one tick: this BufEnter may be firing mid-:close
     -- (focus falling back into a changed file's window), and the pair's
@@ -436,7 +440,7 @@ local function follow_navigation()
     vim.schedule(function()
       if session ~= s then return end
       if idx == session.index and session.pair then return end
-      M.open(idx)
+      M.open(idx, win)
     end)
   elseif pair then
     local cur = vim.api.nvim_get_current_win()
@@ -585,8 +589,9 @@ local function editor_holds_the_keystroke()
   return true
 end
 
--- Open the diff pair for the idx-th changed file.
-function M.open(idx)
+-- Open the diff pair for the idx-th changed file, with its right side in
+-- `win` when that is given and usable, else wherever pick_window() says.
+function M.open(idx, win)
   if not session then
     return notify('no review session — start one with :OrcaReview', vim.log.levels.WARN)
   end
@@ -605,7 +610,7 @@ function M.open(idx)
   local old = session.pair
   session.pair = nil
   if old then release_pair(old) end
-  local win = pick_window()
+  if not usable(win) then win = pick_window() end
   if old and not pairview.reusable(old, entry, win) then
     pairview.close(old)
     old = nil
@@ -619,6 +624,7 @@ function M.open(idx)
     return notify(('%s: %s'):format(entry.path, err or 'cannot open'), vim.log.levels.ERROR)
   end
   session.pair = pair
+  session.last_win = pair.right_win
   for _, buf in ipairs(pair.bufs) do attach_maps(buf) end
   -- Anchor this file's comments in the working-tree side (deleted files
   -- have none — their right side is a scratch).

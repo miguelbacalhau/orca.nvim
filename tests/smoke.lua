@@ -476,6 +476,29 @@ check(vim.bo.modified and vim.api.nvim_buf_get_lines(0, 0, 1, false)[1] == 'line
 vim.cmd('edit!') -- and the fixture goes back the way it was
 vim.api.nvim_del_autocmd(churn_au)
 
+-- A jump that lands in a window of its own — :vsplit to something else,
+-- then :edit a changed file there — opens the pair around that window.
+-- The old pair's teardown used to point the session back at its own right
+-- window, so the new pair was built over there instead, and the window you
+-- were looking at was left out of it.
+orca.open(idx_of('c%.txt'))
+local old_right = vim.api.nvim_get_current_win()
+local old_left = vim.fn.win_getid(vim.fn.winnr('h'))
+vim.cmd('vsplit unchanged.txt')
+local landed = vim.api.nvim_get_current_win()
+vim.cmd('edit src/b.lua')
+drain(function() return vim.wo[landed].diff and count_diff_wins() == 2 end)
+check(vim.api.nvim_get_current_win() == landed and vim.wo[landed].diff,
+  'the pair opens around the window the jump landed in, which keeps focus')
+local _, landed_left = left_side()
+check(landed_left:find('src/b.lua', 1, true) ~= nil and count_diff_wins() == 2,
+  'with src/b.lua\'s merge base beside it, got ' .. landed_left)
+check(not (vim.api.nvim_win_is_valid(old_right) and vim.wo[old_right].diff)
+  and not (vim.api.nvim_win_is_valid(old_left) and vim.wo[old_left].diff),
+  'and the old pair\'s windows are out of diff mode')
+vim.cmd('only')
+drain(function() return panel_win() ~= nil end)
+
 -- Leaving a deleted-file pair must not mangle the layout: its right side
 -- is a scratch too, and wiping a displayed scratch closes its window —
 -- which left the panel as the last window standing, ballooned to fill the
