@@ -147,23 +147,27 @@ vim.g.orca_mappings = nil
 -- to delete the key on the way out, taking the user's map with it.
 vim.cmd('edit src/b.lua')
 local own_buf = vim.api.nvim_get_current_buf()
-vim.keymap.set('n', '<leader>m', '<Cmd>let g:orca_own = 1<CR>', { buffer = own_buf, desc = 'my own' })
+-- A Lua function, as an ftplugin's or on_attach's usually is.
+vim.keymap.set('n', '<leader>m', function() vim.g.orca_own = 1 end, { buffer = own_buf, desc = 'my own' })
 vim.g.orca_mappings = { comment = '<leader>m' }
 orca.review('')
 orca.open(idx_of('src/b%.lua'))
-local in_pair = vim.api.nvim_buf_call(own_buf, function() return vim.fn.maparg('\\m', 'n', false, true) end)
+local function own_map(mode)
+  local got
+  vim.api.nvim_buf_call(own_buf, function() got = vim.fn.maparg('\\m', mode, false, true) end)
+  return got
+end
+local in_pair = own_map('n')
 check(in_pair.desc == 'orca: comment on this line', 'orca borrows the key while the pair is up')
 orca.next()
-local own = function()
-  return vim.api.nvim_buf_call(own_buf, function() return vim.fn.maparg('\\m', 'n', false, true) end)
-end
+local own = function() return own_map('n') end
 check(own().desc == 'my own' and own().buffer == 1,
   'moving on hands the buffer its own map back, got ' .. tostring(own().desc))
 orca.open(idx_of('src/b%.lua'))
 orca.close()
 check(own().desc == 'my own' and own().buffer == 1,
   'and so does closing the session, got ' .. tostring(own().desc))
-check(vim.api.nvim_buf_call(own_buf, function() return vim.fn.maparg('\\m', 'x') end) == '',
+check(next(own_map('x')) == nil,
   'while the visual-mode map orca added is simply gone')
 vim.keymap.del('n', '<leader>m', { buffer = own_buf })
 vim.g.orca_mappings = nil

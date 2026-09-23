@@ -101,6 +101,15 @@ local function open_click(open_row)
   open_row(pos.line)
 end
 
+-- What `lhs` means in `mode` inside `buf`, as maparg()'s dict. Carried out
+-- of the buf_call by upvalue: on 0.9 nvim_buf_call cannot return a dict
+-- holding a Lua callback, and a map made with a Lua function holds one.
+local function maparg_in(buf, lhs, mode)
+  local got
+  vim.api.nvim_buf_call(buf, function() got = vim.fn.maparg(lhs, mode, false, true) end)
+  return got
+end
+
 local Keys = {}
 Keys.__index = Keys
 
@@ -132,7 +141,7 @@ function Keys:buf_map(buf, lhs, rhs, desc, mode)
   self.mapped[buf] = self.mapped[buf] or {}
   local key = mode .. lhs
   if self.mapped[buf][key] == nil then
-    local prev = vim.api.nvim_buf_call(buf, function() return vim.fn.maparg(lhs, mode, false, true) end)
+    local prev = maparg_in(buf, lhs, mode)
     self.mapped[buf][key] = { mode = mode, lhs = lhs,
       prev = (type(prev) == 'table' and prev.buffer == 1) and prev or false }
   end
@@ -197,9 +206,7 @@ end
 function Keys:attach_globals()
   local probe = vim.api.nvim_create_buf(false, true)
   local function previous(lhs)
-    local ok, prev = pcall(vim.api.nvim_buf_call, probe, function()
-      return vim.fn.maparg(lhs, 'n', false, true)
-    end)
+    local ok, prev = pcall(maparg_in, probe, lhs, 'n')
     if ok and type(prev) == 'table' and next(prev) ~= nil then return prev end
     return false
   end

@@ -13,7 +13,7 @@ local function map_sig(lhs)
   local m = vim.fn.maparg(lhs, 'n', false, true)
   return ('%s|%s|%s'):format(m.rhs or '', m.desc or '', m.buffer or '')
 end
-vim.keymap.set('n', ']q', '<Cmd>let g:orca_smoke_prev = 1<CR>', { desc = 'user map' })
+vim.keymap.set('n', ']q', function() vim.g.orca_smoke_prev = 1 end, { desc = 'user map' })
 local sig_next, sig_prev = map_sig(']q'), map_sig('[q')
 
 vim.g.orca_mappings = { next = ']q', prev = '[q', comment = '<leader>rc' }
