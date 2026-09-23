@@ -48,7 +48,7 @@ local function panel_lines()
 end
 -- 1-based row of the panel line matching pat (a lua pattern), or nil when
 -- no row shows it. Rows are the panel's *view* — with the two test files
--- hidden by default they coincide with entry indices for all five visible
+-- hidden by default they coincide with entry indices for all six visible
 -- files (the hidden pair sorts last), which is what lets the rest of this
 -- file keep passing a row to orca.open().
 local function idx_of(pat)
@@ -107,11 +107,11 @@ check(panel_statusline() == 'OrcaReview main...HEAD',
   'panel statusline is OrcaReview main...HEAD, got: ' .. tostring(panel_statusline()))
 local lines = panel_lines()
 out('LIST ' .. table.concat(lines, ' ;; '))
--- Seven changed files, two of them claimed by the default `tests` group:
--- five rows plus the summary row that says so.
-check(#lines == 6, 'five visible files + the summary row, got ' .. #lines)
-check(lines[6]:find('2 files hidden %(tests%)') ~= nil,
-  'summary row names the hidden count and group, got: ' .. lines[6])
+-- Eight changed files, two of them claimed by the default `tests` group:
+-- six rows plus the summary row that says so.
+check(#lines == 7, 'six visible files + the summary row, got ' .. #lines)
+check(lines[7]:find('2 files hidden %(tests%)') ~= nil,
+  'summary row names the hidden count and group, got: ' .. lines[7])
 check(idx_of('z_test') == nil and idx_of('b_spec') == nil,
   'the tests group is folded away by default')
 check(not table.concat(lines, ';'):find('trunk%-only'), 'merge-base diff excludes trunk-only.txt')
@@ -120,8 +120,8 @@ check(table.concat(lines, ';'):find('R  renamed%-from%.txt → renamed%-to%.txt'
 check(table.concat(lines, ';'):find('M  img%.bin %(binary%)') ~= nil, 'binary file marked (binary)')
 check(vim.bo[panel_buf()].filetype == 'orca-panel', 'panel filetype is orca-panel')
 check(vim.bo[panel_buf()].modifiable == false, 'panel buffer is not modifiable')
-check(vim.api.nvim_win_get_height(panel_win()) == 6,
-  'panel height tracks the rendered rows, summary included (6)')
+check(vim.api.nvim_win_get_height(panel_win()) == 7,
+  'panel height tracks the rendered rows, summary included (7)')
 local lay = vim.fn.winlayout()
 check(lay[1] == 'col' and lay[2][#lay[2]][1] == 'leaf' and lay[2][#lay[2]][2] == panel_win(),
   'panel is the full-width bottom strip')
@@ -143,7 +143,7 @@ check(diffstat_at(idx_of('a%.txt')) == '+0|OrcaPanelAdded, |,-1|OrcaPanelRemoved
 check(diffstat_at(idx_of('renamed')) == '+0|OrcaPanelAdded, |,-0|OrcaPanelRemoved, |',
   'pure rename shows +0 -0, got: ' .. tostring(diffstat_at(idx_of('renamed'))))
 check(diffstat_at(idx_of('img%.bin')) == nil, 'binary file shows no line counts')
-check(diffstat_at(6) == nil, 'the summary row carries no line counts')
+check(diffstat_at(7) == nil, 'the summary row carries no line counts')
 
 -- Review auto-opens the first file (deleted a.txt): both sides scratch, diff on.
 local wins = vim.api.nvim_tabpage_list_wins(0)
@@ -360,7 +360,7 @@ check(count_diff_wins() == 0, 'collapse: no window left in diff mode, got ' .. c
 check(shown_gone == 0, 'collapse: no orca:// pair buffer displayed')
 check(#vim.api.nvim_tabpage_list_wins(0) == 2, 'collapse: left split closed (panel + wandered window)')
 check(vim.api.nvim_buf_get_name(0):find('unchanged.txt', 1, true) ~= nil, 'collapse leaves the wandered-to buffer alone')
-check(#panel_lines() == 6 and panel_win() ~= nil, 'collapse keeps the panel')
+check(#panel_lines() == 7 and panel_win() ~= nil, 'collapse keeps the panel')
 
 -- Entering a changed file from the collapsed state reopens its pair around
 -- the window the user is in, panel selection synced. Navigation-driven
@@ -1017,11 +1017,11 @@ check(vim.fn.maparg(']q', 'n', false, true).desc == 'orca: next file'
 keys('3]q')
 check(panel_cur() == 4, '3]q moves three files, got ' .. tostring(panel_cur()))
 keys('9]q')
-check(panel_cur() == 5, 'overshooting count clamps to the last file, got ' .. tostring(panel_cur()))
+check(panel_cur() == 6, 'overshooting count clamps to the last file, got ' .. tostring(panel_cur()))
 keys(']q')
-check(panel_cur() == 5, 'plain ]q at the edge stays put, got ' .. tostring(panel_cur()))
+check(panel_cur() == 6, 'plain ]q at the edge stays put, got ' .. tostring(panel_cur()))
 keys('2[q')
-check(panel_cur() == 3, '2[q moves two files back, got ' .. tostring(panel_cur()))
+check(panel_cur() == 4, '2[q moves two files back, got ' .. tostring(panel_cur()))
 
 -- The point of the change: a foreign quickfix list mid-session (:grep, LSP
 -- references) changes nothing about the panel or the keys — where it used
@@ -1032,7 +1032,7 @@ vim.fn.setqflist({}, ' ', { title = 'foreign', items = {
   { filename = 'unchanged.txt', lnum = 1, text = 'two' },
 } })
 vim.cmd('botright copen')
-check(#panel_lines() == 6 and panel_win() ~= nil, 'foreign qf list leaves the panel untouched')
+check(#panel_lines() == 7 and panel_win() ~= nil, 'foreign qf list leaves the panel untouched')
 check(panel_cur() == 1, 'current-file mark untouched by the foreign list')
 vim.api.nvim_set_current_win(panel_win())
 keys(']q')
@@ -1162,27 +1162,27 @@ end
 orca.review('')
 check(summary_row():find('<CR> shows', 1, true) ~= nil,
   'summary row says what <CR> does, got: ' .. summary_row())
-check(panel_lines()[6]:find('^ …') ~= nil, 'summary row wears the … status column')
+check(panel_lines()[7]:find('^ …') ~= nil, 'summary row wears the … status column')
 
 -- The walk stops at the last *visible* file: what a group folded away is
 -- not something :OrcaReviewNext lands on.
-orca.open(5) -- src/b.lua, the last visible row
+orca.open(6) -- src/café.lua, the last visible row
 orca.next()
-check(panel_cur() == 5, 'next stops at the last visible file, got ' .. tostring(panel_cur()))
+check(panel_cur() == 6, 'next stops at the last visible file, got ' .. tostring(panel_cur()))
 
 -- <CR> on the summary row is the toggle. The row survives in both states,
 -- inverted, so the way back is never something you have to know about.
 vim.api.nvim_set_current_win(panel_win())
-keys('6G')
+keys('7G')
 keys('<CR>')
-check(#panel_lines() == 8, 'showing: seven files + the summary row, got ' .. #panel_lines())
+check(#panel_lines() == 9, 'showing: eight files + the summary row, got ' .. #panel_lines())
 check(idx_of('src/z_test%.lua') ~= nil and idx_of('tests/b_spec%.lua') ~= nil,
   'both grouped files take rows when shown')
 check(summary_row():find('<CR> hides 2 (tests)', 1, true) ~= nil,
   'shown state offers to hide, got: ' .. summary_row())
-check(panel_cur() == 5, 'the current file keeps its row across the toggle')
+check(panel_cur() == 6, 'the current file keeps its row across the toggle')
 -- and now the walk crosses them
-orca.open(idx_of('src/b%.lua'))
+orca.open(idx_of('src/caf'))
 orca.next()
 check(vim.api.nvim_buf_get_name(0):find('z_test.lua', 1, true) ~= nil,
   'shown: the walk enters the grouped files, got ' .. vim.api.nvim_buf_get_name(0))
@@ -1190,14 +1190,14 @@ check(vim.api.nvim_buf_get_name(0):find('z_test.lua', 1, true) ~= nil,
 -- panel has to be able to mark the current file, and a review should not
 -- hide the thing on your screen.
 vim.api.nvim_set_current_win(panel_win())
-keys('8G')
+keys('9G')
 keys('<CR>')
 check(idx_of('src/z_test%.lua') ~= nil,
   'the file you are in keeps its row while its group is hidden')
-check(#panel_lines() == 7, 'six rows + the summary with the current file pinned, got '
+check(#panel_lines() == 8, 'seven rows + the summary with the current file pinned, got '
   .. #panel_lines())
 orca.open(idx_of('src/b%.lua'))
-check(#panel_lines() == 6 and idx_of('src/z_test%.lua') == nil,
+check(#panel_lines() == 7 and idx_of('src/z_test%.lua') == nil,
   'leaving it folds it back, got ' .. #panel_lines())
 
 -- A hidden file is still a full entry: :edit opens its pair, because the
@@ -1239,9 +1239,9 @@ check(vim.fn.maparg('<leader>h', 'n', false, true).desc
   == 'orca: show or hide the grouped files',
   'orca_mappings: hidden binds for the whole session, diff pair included')
 keys('\\h')
-check(#panel_lines() == 8, 'the hidden key shows them from inside a diff, got ' .. #panel_lines())
+check(#panel_lines() == 9, 'the hidden key shows them from inside a diff, got ' .. #panel_lines())
 keys('\\h')
-check(#panel_lines() == 6, 'and hides them again, got ' .. #panel_lines())
+check(#panel_lines() == 7, 'and hides them again, got ' .. #panel_lines())
 orca.close()
 vim.g.orca_mappings = nil
 
@@ -1249,7 +1249,7 @@ vim.g.orca_mappings = nil
 -- still there offering to hide.
 vim.g.orca_review_hidden = false
 orca.review('')
-check(#panel_lines() == 8, 'orca_review_hidden = false lists everything, got ' .. #panel_lines())
+check(#panel_lines() == 9, 'orca_review_hidden = false lists everything, got ' .. #panel_lines())
 check(summary_row():find('<CR> hides 2', 1, true) ~= nil, 'opted out, the row offers to hide')
 orca.close()
 vim.g.orca_review_hidden = nil
@@ -1272,8 +1272,8 @@ local real_notify = vim.notify
 vim.notify = function(m, ...) msgs[#msgs + 1] = m; return real_notify(m, ...) end
 orca.review('')
 vim.notify = real_notify
-check(#panel_lines() == 8, 'all-grouped review lists everything, got ' .. #panel_lines())
-check(table.concat(msgs, '\n'):find('showing all 7', 1, true) ~= nil,
+check(#panel_lines() == 9, 'all-grouped review lists everything, got ' .. #panel_lines())
+check(table.concat(msgs, '\n'):find('showing all 8', 1, true) ~= nil,
   'and says why, got: ' .. table.concat(msgs, ' | '))
 orca.close()
 vim.g.orca_review_groups = nil
@@ -1287,9 +1287,34 @@ orca.review('')
 vim.notify = real_notify
 check(table.concat(msgs, '\n'):find('expected a list of globs', 1, true) ~= nil,
   'bad group config warns, got: ' .. table.concat(msgs, ' | '))
-check(#panel_lines() == 6, 'and the shipped defaults still apply, got ' .. #panel_lines())
+check(#panel_lines() == 7, 'and the shipped defaults still apply, got ' .. #panel_lines())
 orca.close()
 vim.g.orca_review_groups = nil
+
+-- ==================== paths outside ASCII ====================
+
+-- Without -z, git C-quotes any name outside ASCII — "src/caf\303\251.lua",
+-- quotes included — and that is the path the session used to carry: shown
+-- escaped, and naming no file on disk.
+orca.review('')
+local cafe = idx_of('src/café%.lua')
+check(cafe ~= nil, 'the panel row shows the name as it is, got '
+  .. table.concat(panel_lines(), ' ;; '))
+orca.open(cafe)
+check(vim.api.nvim_buf_get_name(0):sub(-#'src/café.lua') == 'src/café.lua'
+  and vim.api.nvim_buf_get_lines(0, 0, -1, false)[1] == 'olá' and vim.wo.diff,
+  'it opens as a pair on the real file, got ' .. vim.api.nvim_buf_get_name(0))
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+vim.cmd('OrcaComment')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'accented' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
+data = read_notes()
+check(data and data.comments[1] and data.comments[1].file == 'src/café.lua'
+  and data.comments[1].quoted == 'olá',
+  'and a comment anchors to it under its real name')
+orca.close()
+vim.fn.delete(notes_path)
 
 -- ==================== a :cd mid-session ====================
 
@@ -1332,8 +1357,8 @@ local warned = false
 for _, l in ipairs(panel_lines()) do
   if l:find('warning', 1, true) then warned = true end
 end
-check(not warned and #panel_lines() == 8,
-  'stderr warnings are not files: seven rows + the summary, got ' .. table.concat(panel_lines(), ' ;; '))
+check(not warned and #panel_lines() == 9,
+  'stderr warnings are not files: eight rows + the summary, got ' .. table.concat(panel_lines(), ' ;; '))
 orca.close()
 vim.g.orca_review_hidden = nil
 vim.fn.system({ 'git', 'config', '--unset', 'diff.renameLimit' })

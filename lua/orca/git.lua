@@ -152,25 +152,48 @@ end
 -- `added`/`deleted` are the file's line counts, nil for a binary file (git
 -- counts no lines there).
 function M.changed_files(mergebase, head)
-  local status_lines, err = git({ 'diff', '--name-status', '-M', mergebase, head })
-  if not status_lines then return nil, err end
+  -- -z: paths arrive verbatim, NUL-separated. Without it git C-quotes any
+  -- name outside ASCII ("caf\303\251.lua", quotes included), which is no
+  -- file anyone has.
+  local status, err = git_raw({ 'diff', '--name-status', '-z', '-M', mergebase, head })
+  if not status then return nil, err end
   -- Same diff, same options: numstat lists files in the same order, and
-  -- carries their line counts — "-<TAB>-" for a binary one. Zip by index,
-  -- so neither rename paths nor quoted names need re-parsing here.
-  local numstat_lines = git({ 'diff', '--numstat', '-M', mergebase, head }) or {}
-  local entries = {}
-  for i, line in ipairs(status_lines) do
-    local fields = vim.split(line, '\t', { plain = true })
-    local added, deleted = (numstat_lines[i] or ''):match('^(%S+)\t(%S+)\t')
-    entries[#entries + 1] = {
-      status = fields[1]:sub(1, 1),
-      old_path = fields[2],
-      path = fields[#fields],
-      binary = added == '-',
+  -- carries their line counts — "-<TAB>-" for a binary one. Zip by index.
+  local numstat = git_raw({ 'diff', '--numstat', '-z', '-M', mergebase, head }) or ''
+
+  -- Status records: the status, then one path — or two, old then new, for
+  -- a rename or copy.
+  local fields = vim.split(status, '\0', { plain = true })
+  local entries, i = {}, 1
+  while fields[i] and fields[i] ~= '' do
+    local letter = fields[i]:sub(1, 1)
+    local old_path, path = fields[i + 1], fields[i + 1]
+    if letter == 'R' or letter == 'C' then
+      path = fields[i + 2]
+      i = i + 3
+    else
+      i = i + 2
+    end
+    entries[#entries + 1] = { status = letter, old_path = old_path, path = path }
+  end
+
+  -- Numstat records: "added<TAB>deleted<TAB>path" — or, for a rename, an
+  -- empty path field followed by the old and new paths as records of their
+  -- own.
+  fields = vim.split(numstat, '\0', { plain = true })
+  local n = 0
+  i = 1
+  while fields[i] and fields[i] ~= '' do
+    local added, deleted, path = fields[i]:match('^(%S+)\t(%S+)\t(.*)$')
+    i = i + ((path == '') and 3 or 1)
+    n = n + 1
+    local e = entries[n]
+    if e then
+      e.binary = added == '-'
       -- tonumber('-') is nil, so a binary file simply has no counts.
-      added = tonumber(added),
-      deleted = tonumber(deleted),
-    }
+      e.added = tonumber(added)
+      e.deleted = tonumber(deleted)
+    end
   end
   return entries
 end
