@@ -1050,6 +1050,24 @@ vim.api.nvim_set_current_win(panel_win())
 vim.cmd('OrcaCommentNext')
 check(vim.api.nvim_buf_get_name(0):find('src/b.lua', 1, true) ~= nil and vim.fn.line('.') == 3,
   'walk from the panel enters the current file at its first comment')
+-- That walk reopens the file already on screen, taking its own pair over.
+-- The new merge-base scratch was named while the old one still held the
+-- name, so the rename failed (E95) and the side went nameless.
+local walk_left = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(vim.fn.win_getid(vim.fn.winnr('h'))))
+check(walk_left:find('^orca://%x+/src/b%.lua$') ~= nil,
+  'reopening the current file keeps its merge-base side named, got ' .. walk_left)
+-- The deleted-file pair has a scratch on both sides, and both keep theirs.
+orca.open(1)
+orca.open(1)
+local gone_names = {}
+for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+  local n = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w))
+  if n:find('a.txt', 1, true) then gone_names[#gone_names + 1] = n end
+end
+check(#gone_names == 2, 'and so does a reopened deleted file, both sides, got '
+  .. table.concat(gone_names, ', '))
+orca.open(idx_of('src/b%.lua'))
+vim.api.nvim_win_set_cursor(0, { 3, 0 })
 
 -- Anchors are extmarks: an insertion above the src/b.lua comment moves the
 -- walk target too (positions self-heal, no stale line numbers).

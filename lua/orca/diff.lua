@@ -8,9 +8,11 @@ local git = require('orca.git')
 
 local M = {}
 
+-- `name` may be left for later: a buffer name is unique, and a scratch that
+-- replaces one of the same name can only take it once the old one is gone.
 local function scratch_buf(name, lines, ft)
   local buf = vim.api.nvim_create_buf(false, true)
-  pcall(vim.api.nvim_buf_set_name, buf, name)
+  if name then pcall(vim.api.nvim_buf_set_name, buf, name) end
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].buftype = 'nofile'
   vim.bo[buf].bufhidden = 'wipe'
@@ -76,9 +78,9 @@ function M.open(entry, mergebase, toplevel, win, old)
   -- empty scratch side is the "real" side here.
   local right, scratch
   if entry.status == 'D' then
-    right = scratch_buf('orca://gone/' .. entry.path, {},
-      vim.filetype.match({ filename = entry.path }))
+    right = scratch_buf(nil, {}, vim.filetype.match({ filename = entry.path }))
     vim.api.nvim_win_set_buf(win, right)
+    pcall(vim.api.nvim_buf_set_name, right, 'orca://gone/' .. entry.path)
     scratch = { right }
   else
     local buf, err = edit(abs)
@@ -99,8 +101,9 @@ function M.open(entry, mergebase, toplevel, win, old)
   if (not ft or ft == '') and entry.status == 'D' then
     ft = vim.filetype.match({ filename = entry.old_path, contents = lines })
   end
-  local left = scratch_buf(('orca://%s/%s'):format(mergebase:sub(1, 12), entry.old_path),
-    lines, ft)
+  -- Named only once it is displayed: reopening the file on screen replaces
+  -- a scratch of the same name, which wipes only when it leaves its window.
+  local left = scratch_buf(nil, lines, ft)
   scratch[#scratch + 1] = left
 
   -- Into the split the outgoing pair was using, when there is one: the
@@ -114,6 +117,7 @@ function M.open(entry, mergebase, toplevel, win, old)
     vim.cmd('leftabove vertical sbuffer ' .. left)
     left_win = vim.api.nvim_get_current_win()
   end
+  pcall(vim.api.nvim_buf_set_name, left, ('orca://%s/%s'):format(mergebase:sub(1, 12), entry.old_path))
   vim.api.nvim_win_call(left_win, function() vim.cmd('diffthis') end)
   vim.api.nvim_set_current_win(win)
   vim.cmd('diffthis')
