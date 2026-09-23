@@ -24,6 +24,7 @@ local pairview = require('orca.diff')
 local notes = require('orca.notes')
 local panel = require('orca.panel')
 local filter = require('orca.filter')
+local keymaps = require('orca.keymaps')
 local notify = require('orca.util').notify
 
 local M = {}
@@ -40,222 +41,6 @@ local function with_session(fn)
       return
     end
     return fn(...)
-  end
-end
-
--- Convenience maps; the :Orca* commands are the public API. The session's
--- navigation verbs are mapped globally for as long as it lives (see
--- GLOBAL_ACTIONS below) and the line-anchored ones only in the buffers it
--- owns; both go away when it lets go.
--- vim.g.orca_mappings reshapes them: a table overrides per action (a
--- string, a list of keys for one action, or false to drop it), false
--- wholesale drops them all. Resolved once per session.
--- Only `open` ships bound: in an orca-owned buffer <CR> shadows nothing
--- (the fugitive/oil precedent), and neither does a double-click — the
--- panel replaced the quickfix list, where <2-LeftMouse> was <CR>, and in
--- a nofile list buffer the native double-click (select the word under the
--- pointer, in visual mode) is noise. Everything else ships unbound — orca
--- never binds a key that doesn't already mean what orca makes it do, and
--- with no orca quickfix list there is no native key left to upgrade (]q/[q
--- would shadow the user's real quickfix motion for the whole session).
--- The commands and config keys remain.
-local DEFAULT_MAPPINGS = {
-  open = { '<CR>', '<2-LeftMouse>' }, -- panel only
-}
-
-local VALID_ACTIONS = {
-  next = true, prev = true, open = true, comment = true, delete = true,
-  comment_next = true, comment_prev = true, panel = true, close = true,
-  hidden = true,
-}
-
--- Actions that don't care which buffer you are in. These are mapped
--- globally for the session's lifetime instead of in the buffers orca owns,
--- because "which file is next" is a property of the review, not of the
--- window you happen to be standing in: a grep result, :help, a terminal, a
--- file outside the diff — the session's keys answer from all of them, the
--- way the :Orca* commands always have. Whatever a key meant before is
--- captured and handed back at :OrcaReviewClose.
---
--- The rest stay buffer-local, because there they are the honest answer:
--- `comment`/`delete` need a changed file's working-tree line to anchor to,
--- and `open` is the panel's alone — a global <CR> would shadow the one key
--- nobody can spare.
-local GLOBAL_ACTIONS = {
-  next = true, prev = true, panel = true, hidden = true, close = true,
-  comment_next = true, comment_prev = true,
-}
-
--- Rows are { action, rhs-or-fn, desc [, x-mode rhs] } — comment also maps
--- in visual mode, where the command's range anchors the whole selection.
-local ACTIONS = {
-  { 'next', function() M.next(vim.v.count1) end, 'orca: next file' },
-  { 'prev', function() M.prev(vim.v.count1) end, 'orca: previous file' },
-  { 'comment', function() M.comment(vim.fn.line('.'), vim.fn.line('.')) end,
-    'orca: comment on this line', ':OrcaComment<CR>' },
-  { 'delete', function() M.comment_delete() end, 'orca: delete the comment on this line' },
-  { 'comment_next', function() M.comment_next() end, 'orca: next comment' },
-  { 'comment_prev', function() M.comment_prev() end, 'orca: previous comment' },
-  { 'panel', function() M.panel() end, 'orca: focus the review panel, or go back' },
-  { 'hidden', function() M.toggle_hidden() end, 'orca: show or hide the grouped files' },
-  { 'close', function() M.close() end, 'orca: close review' },
-}
-
--- One action, one or more keys: `open` is both <CR> and the double-click,
--- and a user's plain string is the one-key case. Non-strings are dropped
--- rather than handed to vim.keymap.set, which would error out of the
--- session start; an empty list means the same as false.
-local function lhs_list(v)
-  if type(v) == 'string' then return { v } end
-  if type(v) ~= 'table' then return {} end
-  local out = {}
-  for _, lhs in ipairs(v) do
-    if type(lhs) == 'string' then out[#out + 1] = lhs end
-  end
-  return out
-end
-
-local function resolve_mappings()
-  local user = vim.g.orca_mappings
-  local maps = {}
-  if user == false then return maps end
-  for action, lhs in pairs(DEFAULT_MAPPINGS) do maps[action] = lhs_list(lhs) end
-  if type(user) == 'table' then
-    for action, lhs in pairs(user) do
-      if not VALID_ACTIONS[action] then
-        notify(('vim.g.orca_mappings: unknown action %q (valid: next, prev, open, comment, delete, comment_next, comment_prev, panel, hidden, close)')
-          :format(action), vim.log.levels.WARN)
-      else
-        local keys = lhs == false and {} or lhs_list(lhs)
-        maps[action] = #keys > 0 and keys or nil
-      end
-    end
-  end
-  return maps
-end
-
--- The key an action is announced by: the first one bound, which is the
--- keyboard one — "<2-LeftMouse> opens a diff" is not a hint anybody needs.
-local function key_of(maps, action)
-  local keys = maps[action]
-  return keys and keys[1]
-end
-
--- Map `lhs` in `buf`, remembering what the buffer itself had on it — only
--- the first time: a re-assert would otherwise record orca's own map as the
--- one to give back.
-local function buf_map(buf, lhs, rhs, desc, mode)
-  mode = mode or 'n'
-  session.mapped[buf] = session.mapped[buf] or {}
-  local key = mode .. lhs
-  if session.mapped[buf][key] == nil then
-    local prev = vim.api.nvim_buf_call(buf, function() return vim.fn.maparg(lhs, mode, false, true) end)
-    session.mapped[buf][key] = { mode = mode, lhs = lhs,
-      prev = (type(prev) == 'table' and prev.buffer == 1) and prev or false }
-  end
-  vim.keymap.set(mode, lhs, rhs, { buffer = buf, nowait = true, desc = desc })
-end
-
-local function attach_maps(buf)
-  for _, a in ipairs(ACTIONS) do
-    if not GLOBAL_ACTIONS[a[1]] then
-      for _, lhs in ipairs(session.maps[a[1]] or {}) do
-        buf_map(buf, lhs, a[2], a[3])
-        if a[4] then buf_map(buf, lhs, a[4], a[3], 'x') end
-      end
-    end
-  end
-end
-
--- The session's global maps, set once at :OrcaReview and undone at
--- :OrcaReviewClose. maparg() reports the *current buffer's* mapping ahead
--- of the global one, so what a key meant before is asked from inside an
--- empty scratch buffer, where nothing is buffer-local — otherwise a review
--- started from a buffer with an LSP map on the same key would hand that
--- map back globally at close.
-local function attach_globals()
-  local probe = vim.api.nvim_create_buf(false, true)
-  local function previous(lhs)
-    local ok, prev = pcall(vim.api.nvim_buf_call, probe, function()
-      return vim.fn.maparg(lhs, 'n', false, true)
-    end)
-    if ok and type(prev) == 'table' and next(prev) ~= nil then return prev end
-    return false
-  end
-  for _, a in ipairs(ACTIONS) do
-    if GLOBAL_ACTIONS[a[1]] then
-      for _, lhs in ipairs(session.maps[a[1]] or {}) do
-        if session.globals[lhs] == nil then session.globals[lhs] = previous(lhs) end
-        vim.keymap.set('n', lhs, a[2], { desc = a[3] })
-      end
-    end
-  end
-  pcall(vim.api.nvim_buf_delete, probe, { force = true })
-end
-
--- Hand every taken key back exactly as it was found: restored when it meant
--- something, deleted when it meant nothing.
-local function detach_globals()
-  for lhs, prev in pairs(session.globals) do
-    pcall(vim.keymap.del, 'n', lhs)
-    if prev then pcall(vim.fn.mapset, 'n', 0, prev) end
-  end
-  session.globals = {}
-end
-
--- Hand a buffer's keys back as they were found, the way detach_globals
--- does for the global ones. mapset() sets a buffer-local dict in the
--- current buffer, hence the buf_call.
-local function detach_maps(buf)
-  if vim.api.nvim_buf_is_valid(buf) then
-    for _, m in pairs(session.mapped[buf] or {}) do
-      pcall(vim.keymap.del, m.mode, m.lhs, { buffer = buf })
-      if m.prev then
-        vim.api.nvim_buf_call(buf, function() pcall(vim.fn.mapset, m.mode, false, m.prev) end)
-      end
-    end
-  end
-  session.mapped[buf] = nil
-end
-
--- Pointer keys, which carry a position of their own. Release and drag are
--- the same family under different names — someone binding `open` to
--- <LeftRelease> wants single-click-opens, and that click lands where the
--- pointer is, not where the cursor was.
-local function is_pointer(lhs)
-  local s = lhs:lower()
-  return (s:find('mouse') or s:find('release') or s:find('drag')) ~= nil
-end
-
--- Open whatever the pointer is on. The cursor is no help here: a click on
--- the panel's 'statusline' (the session's range) fires the map too with
--- the cursor still parked wherever it was, and getmousepos() clamps a
--- click past the last row onto it — after a hide-toggle the window is
--- routinely taller than its rows, so that clamp would toggle the groups
--- back on a click into empty space. Both cases are a no-op instead.
-local function open_click()
-  local win = panel.win()
-  local pos = vim.fn.getmousepos()
-  if not win or pos.winid ~= win or pos.line < 1 then return end
-  -- The panel never wraps, folds, or carries virtual lines, so the row
-  -- under the pointer is exactly topline + winrow - 1.
-  local top = vim.api.nvim_win_call(win, function() return vim.fn.line('w0') end)
-  if top + pos.winrow - 1 > vim.api.nvim_buf_line_count(panel.buf()) then return end
-  M.open_row(pos.line)
-end
-
--- The panel buffer is orca's alone — no ftplugin re-runs, no last-writer
--- mapping race, no list identity to check. Maps are set once per buffer
--- (the buffer outlives its window, so reopening needs no re-assert).
-local function attach_panel_maps(buf)
-  attach_maps(buf)
-  for _, lhs in ipairs(session.maps.open or {}) do
-    if is_pointer(lhs) then
-      buf_map(buf, lhs, open_click, "orca: open the clicked file's diff")
-    else
-      buf_map(buf, lhs, function() M.open_row(vim.fn.line('.')) end,
-        "orca: open this file's diff")
-    end
   end
 end
 
@@ -327,7 +112,7 @@ local function show_panel()
   recompute_view(counts)
   local buf = panel.open(session.entries, session.index, counts, session.view,
     'OrcaReview ' .. session.range)
-  attach_panel_maps(buf)
+  session.keys:attach_panel(buf)
 end
 
 -- Put the pinned panel back, without taking focus from wherever the user
@@ -367,7 +152,7 @@ end
 -- decided here: `session.last_win` is set by the open that built this one,
 -- and a jump names its own window.
 local function release_pair(pair)
-  for _, buf in ipairs(pair.bufs) do detach_maps(buf) end
+  for _, buf in ipairs(pair.bufs) do session.keys:detach(buf) end
 end
 
 local function teardown_pair()
@@ -568,10 +353,20 @@ function M.review(range)
     mergebase = mergebase,
     toplevel = toplevel,
     range = base .. '...' .. head,
-    mapped = {},
     by_path = {},
-    maps = resolve_mappings(),
-    globals = {},
+    -- Looked up through M when a key fires, as the maps always have.
+    keys = keymaps.new({
+      next = function(n) M.next(n) end,
+      prev = function(n) M.prev(n) end,
+      comment = function(l1, l2) M.comment(l1, l2) end,
+      delete = function() M.comment_delete() end,
+      comment_next = function() M.comment_next() end,
+      comment_prev = function() M.comment_prev() end,
+      panel = function() M.panel() end,
+      hidden = function() M.toggle_hidden() end,
+      close = function() M.close() end,
+      open_row = function(row) M.open_row(row) end,
+    }),
   }
   for i, e in ipairs(entries) do session.by_path[e.path] = i end
   vim.api.nvim_create_augroup(AUGROUP, { clear = true })
@@ -608,12 +403,12 @@ function M.review(range)
     head = head, on_change = refresh_panel })
 
   show_panel()
-  attach_globals()
+  session.keys:attach_globals()
 
-  local m = session.maps
+  local k = session.keys
   local hints = {}
-  local open_key, next_key = key_of(m, 'open'), key_of(m, 'next')
-  local prev_key = key_of(m, 'prev')
+  local open_key, next_key = k:key_of('open'), k:key_of('next')
+  local prev_key = k:key_of('prev')
   if open_key then hints[#hints + 1] = open_key .. ' opens a diff' end
   if next_key and prev_key then
     hints[#hints + 1] = ('%s/%s move'):format(next_key, prev_key)
@@ -621,13 +416,13 @@ function M.review(range)
     -- Unbound by default; naming the commands keeps them discoverable.
     hints[#hints + 1] = (next_key or prev_key or ':OrcaReviewNext') .. ' moves'
   end
-  hints[#hints + 1] = (key_of(m, 'comment') or ':OrcaComment') .. ' comments a line'
+  hints[#hints + 1] = (k:key_of('comment') or ':OrcaComment') .. ' comments a line'
   -- Hiding is never silent: when a group folded anything away, the count
   -- and the way back are in the line that opens the session, whether or
   -- not the `hidden` action is bound to a key.
   local view = session.view
   if view.n > 0 then
-    hints[#hints + 1] = ('%s %s'):format(key_of(m, 'hidden') or '<CR> on the … row',
+    hints[#hints + 1] = ('%s %s'):format(k:key_of('hidden') or '<CR> on the … row',
       view.hidden and 'shows them' or ('hides ' .. view.n))
   end
   notify(('%d file%s in %s%s%s%s'):format(#entries, #entries == 1 and '' or 's', session.range,
@@ -679,7 +474,7 @@ M.open = with_session(function(idx, win)
   end
   session.pair = pair
   session.last_win = pair.right_win
-  for _, buf in ipairs(pair.bufs) do attach_maps(buf) end
+  for _, buf in ipairs(pair.bufs) do session.keys:attach(buf) end
   -- Anchor this file's comments in the working-tree side (deleted files
   -- have none — their right side is a scratch).
   if not entry.binary and entry.status ~= 'D' then
@@ -846,16 +641,9 @@ function M.comment(line1, line2)
   local path, buf = comment_target()
   if not path then return end
   notes.comment(path, buf, line1, line2)
-  -- The editor answers to the `delete` key too: deleting what you are
-  -- writing should not mean leaving it first. The buffer is orca's and
-  -- wipes on close, so there is nothing to hand back.
+  -- Deleting what you are writing should not mean leaving it first.
   local ebuf = notes.editor_buf()
-  if ebuf then
-    for _, lhs in ipairs(session.maps.delete or {}) do
-      vim.keymap.set('n', lhs, M.comment_delete,
-        { buffer = ebuf, nowait = true, desc = 'orca: delete this comment' })
-    end
-  end
+  if ebuf then session.keys:attach_editor(ebuf) end
 end
 
 -- Delete the comment under the cursor — or, from inside the editor, the
@@ -877,8 +665,7 @@ function M.close()
   session.pinned = false
   notes.stop()
   teardown_pair()
-  for buf in pairs(session.mapped) do detach_maps(buf) end
-  detach_globals()
+  session.keys:release()
   panel.teardown()
   pcall(vim.api.nvim_del_augroup_by_name, AUGROUP)
   git.root = nil
