@@ -353,14 +353,26 @@ function M.save()
   local now = os.date('!%Y-%m-%dT%H:%M:%SZ')
   state.created = state.created or now
   vim.fn.mkdir(state.dir, 'p')
-  vim.fn.writefile({ vim.json.encode({
+  -- Written beside the file and renamed over it: a rename is atomic, so a
+  -- write that dies halfway (a full disk, a killed editor) leaves the
+  -- previous file whole instead of a truncated one nothing can parse.
+  local tmp = state.path .. '.tmp'
+  local ok, err = pcall(vim.fn.writefile, { vim.json.encode({
     version = M.VERSION,
     range = state.range,
     head = git.rev(state.head),
     created = state.created,
     updated = now,
     comments = out,
-  }) }, state.path)
+  }) }, tmp)
+  if ok then
+    local uv = vim.uv or vim.loop
+    ok, err = uv.fs_rename(tmp, state.path)
+  end
+  if not ok then
+    vim.fn.delete(tmp)
+    notify(('could not write %s: %s'):format(state.path, tostring(err)), vim.log.levels.ERROR)
+  end
   if on_change then on_change() end
 end
 

@@ -246,6 +246,22 @@ check(c1 and c1.text == 'first thought\nsecond line', 'multi-line text preserved
 check(c1 and c1.quoted == 'line2 CHANGED', 'quoted holds the anchor line text')
 check(c1 and c1.status == 'open', 'new comment is open')
 check(c1 and c1.id == 1, 'first comment carries id 1')
+check(vim.fn.filereadable(notes_path .. '.tmp') == 0, 'the save leaves no .tmp behind')
+
+-- Written whole or not at all: a write that dies partway through used to
+-- leave the notes file truncated, which the next session refuses as
+-- invalid JSON. Now it dies on a scratch file, and the real one stays put.
+local real_writefile = vim.fn.writefile
+vim.fn.writefile = function(_, path)
+  real_writefile({ '{"version":1,"comm' }, path)
+  error('disk full')
+end
+pcall(require('orca.notes').save)
+vim.fn.writefile = real_writefile
+local _, after_crash = pcall(read_notes)
+check(type(after_crash) == 'table' and after_crash.comments and after_crash.comments[1].text == 'first thought\nsecond line',
+  'a save that dies mid-write leaves the previous file whole')
+check(vim.fn.filereadable(notes_path .. '.tmp') == 0, 'and cleans up its .tmp')
 check(#vim.api.nvim_buf_get_extmarks(0, NS, 0, -1, {}) == 1, 'comment shown as an extmark in the buffer')
 check(count_at(bidx) == '*1', 'panel counts the new comment — *1')
 check(count_hl_at(bidx), 'count token highlighted OrcaPanelCount')
