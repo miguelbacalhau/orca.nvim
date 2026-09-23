@@ -184,4 +184,34 @@ function M.classifier(groups)
   end
 end
 
+-- The panel's view over a session's entries: which it shows, in order, and
+-- what the groups claim — { rows, groups, n, hidden, blocked }. `rows` are
+-- entry indices; `groups` counts each group's claims and `n` all of them.
+-- Three things pin an entry visible whatever its group says: a comment on
+-- it (you have already said something about this file — `counts`, by
+-- path), being the current entry (`index` — you are looking at it), and
+-- being the last one left. That last one is the only place the default
+-- overrides itself: hiding every file would open a review with nothing in
+-- it, so the view shows everything, with `hidden` false and `blocked` set
+-- to say why.
+function M.view(entries, index, counts, hidden, classify)
+  local rows, groups, n = {}, {}, 0
+  for i, e in ipairs(entries) do
+    local group
+    if i ~= index and (counts[e.path] or 0) == 0 then group = classify(e) end
+    if group then
+      groups[group] = (groups[group] or 0) + 1
+      n = n + 1
+    end
+    if not (group and hidden) then rows[#rows + 1] = i end
+  end
+  local blocked = hidden and #rows == 0
+  if blocked then
+    hidden = false
+    rows = {}
+    for i = 1, #entries do rows[i] = i end
+  end
+  return { rows = rows, groups = groups, n = n, hidden = hidden, blocked = blocked }
+end
+
 return M

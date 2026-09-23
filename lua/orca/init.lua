@@ -67,36 +67,14 @@ local function resolve_hidden()
   return v and true or false
 end
 
--- The panel's view over session.entries: which entries it shows, in
--- order, and what the groups claim. Three things pin an entry visible
--- whatever its group says — a comment on it (you have already said
--- something about this file), being the file the session is currently in
--- (you are looking at it), and being the last one left. That last one is
--- the only place the default overrides itself: hiding every file would
--- open a review with nothing in it, so an all-tests branch shows
--- everything and says so.
+-- Recompute the panel's view (filter.view) from session state. A view that
+-- had to show everything, because the groups claimed every file, turns
+-- hiding off for the session: the toggle then reads as what is on screen.
 local function recompute_view(counts)
-  counts = counts or notes.counts()
-  local classify = session.classify
-  local rows, groups, n = {}, {}, 0
-  for i, e in ipairs(session.entries) do
-    local group
-    if i ~= session.index and (counts[e.path] or 0) == 0 then group = classify(e) end
-    if group then
-      groups[group] = (groups[group] or 0) + 1
-      n = n + 1
-    end
-    if not (group and session.hidden) then rows[#rows + 1] = i end
-  end
-  local blocked = session.hidden and #rows == 0
-  if blocked then
-    session.hidden = false
-    rows = {}
-    for i = 1, #session.entries do rows[i] = i end
-  end
-  session.view = { rows = rows, groups = groups, n = n, hidden = session.hidden,
-    blocked = blocked }
-  return blocked
+  local view = filter.view(session.entries, session.index, counts or notes.counts(),
+    session.hidden, session.classify)
+  if view.blocked then session.hidden = false end
+  session.view = view
 end
 
 local function refresh_panel()
