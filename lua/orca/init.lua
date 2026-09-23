@@ -383,6 +383,18 @@ local function teardown_pair()
   session.navigating = was
 end
 
+-- The changed file `buf` is the working-tree buffer of: its index and entry,
+-- or nil for anything else — scratch sides, the panel, the comment editor,
+-- files outside the review.
+local function entry_of(buf)
+  if vim.bo[buf].buftype ~= '' then return nil end
+  local prefix = session.toplevel .. '/'
+  local name = vim.api.nvim_buf_get_name(buf)
+  if name:sub(1, #prefix) ~= prefix then return nil end
+  local idx = session.by_path[name:sub(#prefix + 1)]
+  return idx, idx and session.entries[idx]
+end
+
 -- The window the next diff pair's right side goes into: the previous
 -- pair's, else the current or first ordinary window, else a fresh split.
 -- Never the panel (by id — its buffer is nofile like the pair's scratch
@@ -433,13 +445,7 @@ local function follow_navigation()
     end
   end
 
-  local idx
-  local prefix = session.toplevel .. '/'
-  local name = vim.api.nvim_buf_get_name(buf)
-  if name:sub(1, #prefix) == prefix then
-    idx = session.by_path[name:sub(#prefix + 1)]
-  end
-
+  local idx = entry_of(buf)
   if idx then
     -- Re-entering the file whose pair is already current must be a no-op:
     -- a binary "pair" is a plain :edit of the very buffer just entered,
@@ -786,11 +792,7 @@ local comment_walk = with_session(function(dir)
   -- Current position: the cursor when it sits in a reviewed file's
   -- working-tree buffer; from anywhere else (the panel, a scratch side),
   -- the current file's near boundary, so the walk enters it naturally.
-  local buf = vim.api.nvim_get_current_buf()
-  local name = vim.api.nvim_buf_get_name(buf)
-  local prefix = session.toplevel .. '/'
-  local here = vim.bo[buf].buftype == '' and name:sub(1, #prefix) == prefix
-    and session.by_path[name:sub(#prefix + 1)] or nil
+  local here = entry_of(vim.api.nvim_get_current_buf())
   local cidx = here or session.index
   local cline = here and vim.fn.line('.') or (dir > 0 and 0 or math.huge)
 
@@ -828,11 +830,8 @@ function M.comment_prev() comment_walk(-1) end
 -- v1 punts), and deleted/binary entries have no commentable right side.
 local comment_target = with_session(function()
   local buf = vim.api.nvim_get_current_buf()
-  local name = vim.api.nvim_buf_get_name(buf)
-  local prefix = session.toplevel .. '/'
-  local idx = name:sub(1, #prefix) == prefix and session.by_path[name:sub(#prefix + 1)]
-  local entry = idx and session.entries[idx]
-  if not entry or entry.binary or vim.bo[buf].buftype ~= '' then
+  local _, entry = entry_of(buf)
+  if not entry or entry.binary then
     notify('comments anchor to the working-tree side of a changed text file', vim.log.levels.WARN)
     return
   end
