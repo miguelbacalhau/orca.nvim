@@ -511,6 +511,20 @@ local function float_open(e, from, row, col)
   end
   state.gap = c
   fit()
+  -- Leaving the float is being done with it: everything is already saved,
+  -- and a float left open would keep covering the comment's own virt_lines.
+  -- Deferred, since a window can't close while it is being left.
+  vim.api.nvim_create_autocmd('WinLeave', {
+    group = 'orca-notes',
+    buffer = e.buf,
+    callback = function()
+      vim.schedule(function()
+        if state and state.edit == e and vim.api.nvim_get_current_win() ~= win then
+          M.close_input()
+        end
+      end)
+    end,
+  })
   vim.api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, {
     group = 'orca-notes',
     buffer = e.buf,

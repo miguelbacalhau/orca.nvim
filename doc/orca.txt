@@ -116,7 +116,9 @@ COMMANDS                                                        *orca-commands*
         half a second later, on leaving insert mode, and on close — a
         crash loses nothing, and there is nothing to commit. Close it any
         way you like; `:w` flushes the save, so the habit is harmless and
-        `:wq` closes. A new comment exists from its first word: close the
+        `:wq` closes. Leaving the float for another window closes it too,
+        so the comment shows rendered, `#N` and all, as soon as you are
+        back in the code. A new comment exists from its first word: close the
         editor before typing anything and nothing was created, no id used
         up. Opening a comment is not editing it — one orca resolved stays
         resolved until its text actually changes, and changing it back

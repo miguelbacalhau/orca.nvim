@@ -66,6 +66,22 @@ if has_float then
   check(table.concat(restored, '\n'):find('gamma', 1, true) ~= nil,
     'closing restores real virt_lines with the edited text')
 
+  -- Leaving the float for the file is being done with it. It used to stay
+  -- open over the gap, so the comment kept showing as the float's bare
+  -- text, never as its rendered virt_lines with the #N in front.
+  vim.api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.cmd('OrcaComment')
+  fwin = vim.api.nvim_get_current_win()
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'left behind' })
+  vim.api.nvim_exec_autocmds('TextChanged', { buffer = 0 })
+  vim.cmd('wincmd p')
+  drain(function() return not vim.api.nvim_win_is_valid(fwin) end)
+  check(not vim.api.nvim_win_is_valid(fwin) and vim.api.nvim_get_current_win() == fsrc_win,
+    'leaving the float closes it, and the cursor stays where it went')
+  check(first_mark()[4].virt_lines[1][1][1] == '┃ #1 left behind',
+    'and the comment shows rendered, number and all, got '
+      .. tostring(first_mark()[4].virt_lines[1][1][1]))
+
   -- Session close with a float open: float gone, no dangling autocmds.
   vim.api.nvim_win_set_cursor(0, { 2, 0 })
   vim.cmd('OrcaComment')
