@@ -270,7 +270,7 @@ end
 -- everything and says so.
 local function recompute_view(counts)
   counts = counts or notes.counts()
-  local classify = filter.classifier()
+  local classify = session.classify
   local rows, groups, n = {}, {}, 0
   for i, e in ipairs(session.entries) do
     local group
@@ -533,6 +533,9 @@ function M.review(range)
     entries = entries,
     index = 0,
     hidden = resolve_hidden(),
+    -- The group config, read once: a bad one warns at session start, not
+    -- on every refresh after it.
+    classify = filter.classifier(),
     pinned = resolve_pinned(),
     mergebase = mergebase,
     toplevel = toplevel,

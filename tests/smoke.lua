@@ -1323,15 +1323,30 @@ vim.g.orca_review_groups = nil
 
 -- A malformed group config warns and falls back to the defaults rather
 -- than hiding nothing (or everything) in silence.
+-- It warns once, at session start: the config is read then and not again,
+-- where every panel refresh used to re-read it and warn afresh.
 vim.g.orca_review_groups = { tests = 'tests/' }
 msgs = {}
 vim.notify = function(m, ...) msgs[#msgs + 1] = m; return real_notify(m, ...) end
 orca.review('')
+orca.open(idx_of('src/b%.lua'))
+orca.prev()
+orca.next()
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+vim.cmd('OrcaComment')
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'refreshes the panel' })
+vim.cmd('write')
+drain(function() return vim.api.nvim_buf_get_name(0):find('orca://comment/', 1, true) == nil end)
 vim.notify = real_notify
-check(table.concat(msgs, '\n'):find('expected a list of globs', 1, true) ~= nil,
-  'bad group config warns, got: ' .. table.concat(msgs, ' | '))
+local warnings = 0
+for _, m in ipairs(msgs) do
+  if m:find('expected a list of globs', 1, true) then warnings = warnings + 1 end
+end
+check(warnings == 1, 'bad group config warns exactly once across open, next and a comment, got '
+  .. warnings)
 check(#panel_lines() == 7, 'and the shipped defaults still apply, got ' .. #panel_lines())
 orca.close()
+vim.fn.delete(notes_path)
 vim.g.orca_review_groups = nil
 
 -- ==================== paths outside ASCII ====================
