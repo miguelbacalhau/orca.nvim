@@ -473,6 +473,9 @@ function M.review(range)
       :format(root), vim.log.levels.ERROR)
   end
 
+  -- From here on every git query asks this repository, whatever the cwd
+  -- does next.
+  git.root = toplevel
   local mergebase, mberr = git.merge_base(base, head)
   if not mergebase then return notify(mberr, vim.log.levels.ERROR) end
   local entries, derr = git.changed_files(mergebase, head)
@@ -835,6 +838,7 @@ function M.close()
   detach_globals()
   panel.teardown()
   pcall(vim.api.nvim_del_augroup_by_name, AUGROUP)
+  git.root = nil
   session = nil
 end
 

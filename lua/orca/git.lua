@@ -4,6 +4,12 @@
 
 local M = {}
 
+-- The session's repository, while one is running. Every query then runs
+-- in it (-C), because the user's cwd is theirs to :cd anywhere mid-review.
+-- The lookups that find the repository in the first place — toplevel,
+-- repo_root, trunk — ask the cwd instead, which is what they are for.
+M.root = nil
+
 -- Run git with list-form arguments (no shell involved) and return its exit
 -- code, stdout and stderr, kept apart: git writes warnings to stderr on a
 -- successful run (a skipped rename detection, say), and those are not
@@ -27,9 +33,11 @@ local function run(cmd)
   return code, table.concat(out, '\n'), table.concat(err, '\n')
 end
 
--- git's stdout, or nil plus a message carrying its stderr.
-local function git_raw(args)
+-- git's stdout, or nil plus a message carrying its stderr. `here` runs it
+-- in the cwd even while a session has a root.
+local function git_raw(args, here)
   local cmd = { 'git' }
+  if M.root and not here then vim.list_extend(cmd, { '-C', M.root }) end
   vim.list_extend(cmd, args)
   local code, stdout, stderr = run(cmd)
   if code ~= 0 then
@@ -41,8 +49,8 @@ local function git_raw(args)
 end
 
 -- git's stdout as lines, or nil plus a message.
-local function git(args)
-  local stdout, err = git_raw(args)
+local function git(args, here)
+  local stdout, err = git_raw(args, here)
   if not stdout then return nil, err end
   local lines = vim.split(stdout, '\n', { plain = true })
   if lines[#lines] == '' then table.remove(lines) end
@@ -51,13 +59,13 @@ end
 
 -- Absolute path of the working tree root.
 function M.toplevel()
-  local out = git({ 'rev-parse', '--show-toplevel' })
+  local out = git({ 'rev-parse', '--show-toplevel' }, true)
   if not out or not out[1] then return nil, 'not inside a git working tree' end
   return out[1]
 end
 
 function M.in_repo()
-  return git({ 'rev-parse', '--git-dir' }) ~= nil
+  return git({ 'rev-parse', '--git-dir' }, true) ~= nil
 end
 
 -- Absolute repo root as orca defines it: the parent of the *common* git
@@ -65,10 +73,10 @@ end
 -- layout that is the directory holding .bare and every worktree; in a
 -- plain checkout, the toplevel.
 function M.repo_root()
-  local out = git({ 'rev-parse', '--path-format=absolute', '--git-common-dir' })
+  local out = git({ 'rev-parse', '--path-format=absolute', '--git-common-dir' }, true)
   if not out or not out[1] then
     -- --path-format needs git ≥ 2.31; older gits emit a cwd-relative path.
-    out = git({ 'rev-parse', '--git-common-dir' })
+    out = git({ 'rev-parse', '--git-common-dir' }, true)
   end
   if not out or not out[1] then return nil, 'not inside a git repository' end
   return vim.fn.fnamemodify(out[1], ':p:h:h')
@@ -107,24 +115,24 @@ end
 --     remote's default branch; prefer its local twin.
 --  3. Last resort: the first of main/master/trunk that exists locally.
 function M.trunk()
-  local gitdir = git({ 'rev-parse', '--git-dir' })
-  local common = git({ 'rev-parse', '--git-common-dir' })
+  local gitdir = git({ 'rev-parse', '--git-dir' }, true)
+  local common = git({ 'rev-parse', '--git-common-dir' }, true)
   if not (gitdir and gitdir[1] and common and common[1]) then
     return nil, 'not inside a git repository'
   end
   if vim.fn.fnamemodify(gitdir[1], ':p') ~= vim.fn.fnamemodify(common[1], ':p') then
     local ref = git({ '--git-dir=' .. vim.fn.fnamemodify(common[1], ':p'),
-      'symbolic-ref', '--quiet', '--short', 'HEAD' })
+      'symbolic-ref', '--quiet', '--short', 'HEAD' }, true)
     if ref and ref[1] and ref[1] ~= '' then return ref[1] end
   end
-  local origin = git({ 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD' })
+  local origin = git({ 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD' }, true)
   local name = origin and origin[1] and origin[1]:match('^origin/(.+)$')
   if name then
-    if git({ 'rev-parse', '--verify', '--quiet', 'refs/heads/' .. name }) then return name end
+    if git({ 'rev-parse', '--verify', '--quiet', 'refs/heads/' .. name }, true) then return name end
     return origin[1]
   end
   for _, cand in ipairs({ 'main', 'master', 'trunk' }) do
-    if git({ 'rev-parse', '--verify', '--quiet', 'refs/heads/' .. cand }) then return cand end
+    if git({ 'rev-parse', '--verify', '--quiet', 'refs/heads/' .. cand }, true) then return cand end
   end
   return nil, 'cannot resolve a trunk branch — pass an explicit range: :OrcaReview <base>...<head>'
 end
